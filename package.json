@@ -1,0 +1,23 @@
+{
+  "name": "audio-punch",
+  "version": "0.1.0",
+  "description": "DJ-style per-tab audio mixer browser extension",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "scripts": {
+    "dev": "vite build --watch --mode development",
+    "build": "vite build",
+    "check": "tsc --noEmit",
+    "test": "node --test --experimental-transform-types test/*.test.ts",
+    "verify": "npm run check && npm run test && npm run build",
+    "test:smoke": "node scripts/smoke.mjs"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.268",
+    "@types/node": "^22.20.2",
+    "esbuild": "^0.23.0",
+    "typescript": "^5.5.4",
+    "vite": "^5.4.2"
+  }
+}
