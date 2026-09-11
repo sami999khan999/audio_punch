@@ -28,7 +28,6 @@ export const ACTION_CATALOG: ActionDef[] = [
   { id: 'strip.next', label: 'Next strip', group: 'Strips' },
   { id: 'strip.prev', label: 'Previous strip', group: 'Strips' },
   { id: 'strip.global', label: 'Jump to global', group: 'Strips' },
-  { id: 'strip.arm', label: 'Arm / release this tab', group: 'Strips' },
   { id: 'strip.ignoreGlobal', label: 'Pin this site off global', group: 'Strips' },
   { id: 'strip.reset', label: 'Reset this strip', group: 'Strips' },
 
@@ -148,7 +147,6 @@ export function createKeymap(options: KeymapOptions): (event: KeyboardEvent) => 
     'strip.next': () => actions.selectRelative(1),
     'strip.prev': () => actions.selectRelative(-1),
     'strip.global': actions.selectGlobal,
-    'strip.arm': actions.armSelected,
     'strip.ignoreGlobal': actions.toggleIgnoreGlobal,
     'strip.reset': actions.resetTarget,
 

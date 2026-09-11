@@ -190,6 +190,15 @@ Details worth knowing before editing:
   component in the sheet.
 - **The backdrop is stored under its own key**, never inside `Settings`, which is
   broadcast to every surface on each slider movement.
+- **The hot paths are deliberately quiet.** Metering is a one-way
+  `content:level` message at ~24Hz that triggers no chain resolve, no reply and
+  no state broadcast; media-element lookups read a cache refreshed by a
+  debounced observer rather than walking the DOM; the worker coalesces the
+  fan-out a mutation causes; and identical chains are never re-sent or
+  re-applied. Undoing any of these turns a slider drag into a per-frame storm.
+- **Reverb impulses are rebuilt on a settle timer.** Generating one fills up to
+  six seconds of stereo noise, which is not something to do per animation frame
+  while the size slider moves.
 
 ---
 
@@ -207,14 +216,22 @@ npm run test:regression # fullscreen and click-through regressions
 ```
 
 `npm test` covers the parts that fail silently rather than loudly: global versus
-per-site resolution, template apply/remove snapshots, import validation and
-migration, the keymap, the FFT, and the phase vocoder's pitch accuracy and
-unity-gain normalisation.
+per-site resolution, source selection across state broadcasts, template
+apply/remove snapshots, import validation and migration, the keymap, silence
+detection, the FFT, and the phase vocoder's pitch accuracy and unity-gain
+normalisation.
 
 `npm run test:smoke` launches headless Chromium with the built extension and
-checks the worker starts, the dashboard connects, the content script routes a
-media element, the overlay mounts with a closed shadow root, a setting reaches
-storage, and the worklets are fetchable.
+checks the worker starts, the content script loads without throwing, the
+dashboard connects, a media element is routed, the overlay mounts with a closed
+shadow root, a setting reaches storage, and the worklets are fetchable.
+
+That "loads without throwing" check earns its place: a throw during
+content-script setup takes the message listener with it, and everything after
+then fails as an unhelpful *receiving end does not exist*. It has caught two
+temporal-dead-zone bugs where a callback fired during construction read a `let`
+declared further down. `src/content/index.ts` now declares all of its mutable
+state above the constructors for that reason.
 
 `npm run test:regression` pins two defects that only show up in a real browser
 and made the extension unusable with video:

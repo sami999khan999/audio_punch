@@ -201,7 +201,18 @@ export function createRack(options: RackOptions): RackHandle {
     return node
   }
 
+  let renderedTabs = ''
+
   function renderTabs(): void {
+    const signature = MODULE_GROUPS.map(
+      (entry) =>
+        `${entry.title}:${entry.title === group}:${entry.modules.filter((id) => (chain[id] as { on?: boolean }).on === true).length}`,
+    ).join('|')
+    // Rebuilding these on every state broadcast threw away focus and hover
+    // twenty-four times a second while metering was running.
+    if (signature === renderedTabs) return
+    renderedTabs = signature
+
     tabs.replaceChildren(
       ...MODULE_GROUPS.map((entry) => {
         const active = entry.title === group

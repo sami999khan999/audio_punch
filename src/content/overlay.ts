@@ -114,12 +114,16 @@ export function createOverlay(store: UiStore): OverlayHandle {
   applyHeight(height)
 
   let dragStart = 0
+  /** While true, incoming state must not reset the height under the pointer. */
+  let resizing = false
   onDrag(grip, {
     onStart: () => {
+      resizing = true
       dragStart = panel.getBoundingClientRect().height
     },
     onMove: (delta) => applyHeight(dragStart + delta.y),
     onEnd: () => {
+      resizing = false
       // Dragged to (near) full height means "fill", so the panel keeps
       // following the window instead of freezing at today's pixel count.
       const next = height >= window.innerHeight - 24 ? FILL_SENTINEL : height
@@ -305,7 +309,7 @@ export function createOverlay(store: UiStore): OverlayHandle {
       mixer.update(state)
       renderToasts(state)
       renderBackdrop(state)
-      applyHeight(state.snapshot.settings.ui.overlayHeight)
+      if (!resizing) applyHeight(state.snapshot.settings.ui.overlayHeight)
       overlay.setAttribute('data-reduce-motion', String(state.snapshot.settings.ui.reduceMotion))
       overlay.style.setProperty('--ap-accent', state.snapshot.settings.ui.accent)
       if (!helpSheet.hidden) renderHelp(state.snapshot.settings.keymap)

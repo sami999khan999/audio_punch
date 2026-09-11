@@ -8,6 +8,13 @@
 import type { ChainState } from '../shared/types.ts'
 import { ramp, type ChainModule } from './module.ts'
 
+/**
+ * Generating an impulse fills up to six seconds of stereo noise — well over a
+ * million samples. Dragging the size slider would otherwise do that on every
+ * animation frame, so regeneration waits for the value to settle.
+ */
+const IMPULSE_SETTLE_MS = 150
+
 /** Regenerating an impulse is expensive, so only do it on a real change. */
 interface ImpulseKey {
   size: number
@@ -47,6 +54,8 @@ export class ReverbModule implements ChainModule {
   private readonly wet: GainNode
   private readonly convolver: ConvolverNode
   private impulseKey: ImpulseKey | null = null
+  private pendingKey: ImpulseKey | null = null
+  private settleTimer: ReturnType<typeof setTimeout> | null = null
 
   constructor(ctx: BaseAudioContext) {
     this.ctx = ctx
@@ -68,20 +77,41 @@ export class ReverbModule implements ChainModule {
     return chain.reverb.on && chain.reverb.mix > 0
   }
 
+  private sameAsLoaded(key: ImpulseKey): boolean {
+    return (
+      this.impulseKey !== null &&
+      this.impulseKey.size === key.size &&
+      this.impulseKey.decay === key.decay &&
+      this.impulseKey.damping === key.damping
+    )
+  }
+
+  private rebuild(key: ImpulseKey): void {
+    this.convolver.buffer = buildImpulse(this.ctx, key)
+    this.impulseKey = key
+    this.pendingKey = null
+  }
+
   update(chain: ChainState, now: number): void {
     const key: ImpulseKey = {
       size: chain.reverb.size,
       decay: chain.reverb.decay,
       damping: chain.reverb.damping,
     }
-    if (
-      !this.impulseKey ||
-      this.impulseKey.size !== key.size ||
-      this.impulseKey.decay !== key.decay ||
-      this.impulseKey.damping !== key.damping
-    ) {
-      this.convolver.buffer = buildImpulse(this.ctx, key)
-      this.impulseKey = key
+
+    if (!this.sameAsLoaded(key)) {
+      this.pendingKey = key
+      if (this.settleTimer) clearTimeout(this.settleTimer)
+      if (this.impulseKey === null && chain.reverb.on) {
+        // Nothing loaded yet and the module is being switched on: build now,
+        // or the first thing the user hears is a dry signal.
+        this.rebuild(key)
+      } else {
+        this.settleTimer = setTimeout(() => {
+          this.settleTimer = null
+          if (this.pendingKey) this.rebuild(this.pendingKey)
+        }, IMPULSE_SETTLE_MS)
+      }
     }
     // Equal-power crossfade keeps perceived loudness steady across the blend.
     const mix = Math.min(1, Math.max(0, chain.reverb.mix))
@@ -90,6 +120,7 @@ export class ReverbModule implements ChainModule {
   }
 
   dispose(): void {
+    if (this.settleTimer) clearTimeout(this.settleTimer)
     for (const node of [this.split, this.merge, this.dry, this.wet, this.convolver]) {
       node.disconnect()
     }

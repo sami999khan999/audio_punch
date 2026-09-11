@@ -7,7 +7,7 @@
  * that never plays anything pays almost nothing.
  */
 import type { ChainState } from '../shared/types.ts'
-import type { ContentCommand, ContentReport } from '../shared/messages.ts'
+import type { ContentCommand, ContentLevel, ContentReport } from '../shared/messages.ts'
 import { UiStore } from '../ui/core/store.ts'
 import { ContentEngine } from './engine.ts'
 import { createMediaController } from './media-control.ts'
@@ -23,21 +23,32 @@ if (window.top === window.self) {
 }
 
 function start(): void {
+  // Every piece of mutable state is declared before anything that could read
+  // it. The engine and the media controller both call back into `report`, and
+  // `report` touches most of this — a `let` declared further down would be in
+  // its temporal dead zone at that moment and throw, taking the whole content
+  // script (and so the message listener) with it.
   const store = new UiStore()
   let overlay: OverlayHandle | null = null
   let chain: ChainState | null = null
   let meterTimer: ReturnType<typeof setInterval> | null = null
+  /** The last report we sent, so identical ones are not resent. */
+  let lastReport = ''
+  /** Last chain we handed the engine, to skip redundant re-applies. */
+  let lastChain = ''
 
   const engine = new ContentEngine(() => report())
   const media = createMediaController(engine, () => report())
-  // Both are constructed before anything can call back into them.
-  media.scan()
 
   /**
    * Tells the worker what this page has, and takes back the chain it should be
    * running. One round trip configures a freshly loaded page.
+   *
+   * Only sent when the page's media situation actually changes — this used to
+   * ride the metering timer, which meant a chain resolve, a reply and a full
+   * re-apply of every parameter twenty-four times a second.
    */
-  function report(level?: ReturnType<ContentEngine['readLevel']>): void {
+  function report(): void {
     const status = engine.status()
     const message: ContentReport = {
       type: 'content:report',
@@ -45,8 +56,11 @@ function start(): void {
       count: media.count(),
       hooked: status.hooked,
       silent: status.silent,
-      ...(level ? { level } : {}),
     }
+    const signature = JSON.stringify(message)
+    if (signature === lastReport) return
+    lastReport = signature
+
     void chrome.runtime
       .sendMessage(message)
       .then((reply: { chain?: ChainState; meters?: boolean } | undefined) => {
@@ -54,11 +68,17 @@ function start(): void {
         if (reply?.meters !== undefined) setMetering(reply.meters)
       })
       .catch(() => {
-        // The worker is asleep or reloading; the next report will land.
+        // The worker is asleep or reloading. Clear the dedupe key so the next
+        // change retries — otherwise a failed first report would be the only
+        // one this page ever sends.
+        lastReport = ''
       })
   }
 
   function applyChain(next: ChainState): void {
+    const signature = JSON.stringify(next)
+    if (signature === lastChain) return
+    lastChain = signature
     chain = next
     engine.apply(next)
   }
@@ -67,7 +87,12 @@ function start(): void {
     if (enabled && !meterTimer) {
       meterTimer = setInterval(() => {
         const level = engine.readLevel()
-        if (level) report(level)
+        // Fire and forget: no reply, no chain round trip, no state publish.
+        if (level) {
+          void chrome.runtime
+            .sendMessage({ type: 'content:level', level } satisfies ContentLevel)
+            .catch(() => undefined)
+        }
       }, METER_INTERVAL_MS)
     } else if (!enabled && meterTimer) {
       clearInterval(meterTimer)
@@ -153,6 +178,9 @@ function start(): void {
     })
     return false
   })
+
+  // Last: everything above is initialised, so the first scan can safely report.
+  media.scan()
 
   window.addEventListener('pagehide', () => media.destroy(), { once: true })
 }

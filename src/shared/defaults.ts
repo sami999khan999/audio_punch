@@ -86,7 +86,6 @@ export const DEFAULT_KEYMAP: Record<string, string[]> = {
   'strip.global': ['`'],
   'strip.reset': ['Backspace'],
   'strip.ignoreGlobal': ['i'],
-  'strip.arm': ['Enter'],
   'gain.up': ['ArrowUp'],
   'gain.down': ['ArrowDown'],
   'gain.fine.up': ['Shift+ArrowUp'],

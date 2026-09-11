@@ -32,7 +32,6 @@ export interface MixerActions {
   resetTarget(): void
   toggleIgnoreGlobal(): void
   toggleGlobal(): void
-  armSelected(): void
   applyTemplateSlot(index: number): void
   removeTemplate(): void
   openDashboard(): void
@@ -220,11 +219,6 @@ export function createMixer(options: MixerOptions): MixerHandle {
     },
     toggleGlobal() {
       void store.send({ type: 'ui:set-global-on', on: !state.snapshot.settings.global.on })
-    },
-    /** Kept for the keymap's sake: with element hooking there is nothing to
-     *  arm, so the nearest equivalent is pinning the site off global. */
-    armSelected() {
-      actions.toggleIgnoreGlobal()
     },
     applyTemplateSlot(index) {
       const template = state.snapshot.settings.templates[index]

@@ -66,6 +66,8 @@ export class UiStore {
   private nextRequestId = 1
   private readonly pending = new Map<number, (response: UiResponse) => void>()
   private nextToastId = 1
+  /** Set once the user picks a source, so the default no longer overrides it. */
+  private chosen = false
 
   get(): UiState {
     return this.state
@@ -123,12 +125,6 @@ export class UiStore {
       case 'toast':
         this.pushToast(message.kind, message.text)
         break
-      case 'overlay:toggle':
-        this.set({ open: !this.state.open })
-        break
-      case 'overlay:open':
-        this.set({ open: true })
-        break
     }
   }
 
@@ -137,16 +133,33 @@ export class UiStore {
    * overlay is running in — rather than to global — matches what someone
    * pressing the shortcut on a noisy page is asking for.
    */
+  /**
+   * Keeps the selection valid as tabs come and go.
+   *
+   * The `chosen` flag is what makes selecting Global stick. Without it, every
+   * incoming snapshot re-ran the "default to the tab I am running in" rule and
+   * dragged the selection straight back off Global, which made the global
+   * strip impossible to edit.
+   */
   private reconcileTarget(snapshot: StateSnapshot): Pick<UiState, 'target' | 'targetTabId'> {
     const { target, targetTabId } = this.state
+
+    // A selected tab that still exists always wins.
     if (targetTabId !== null && snapshot.tabs.some((t) => t.tabId === targetTabId)) {
       return { target, targetTabId }
     }
-    if (target === 'global' && targetTabId === null) {
-      const own = snapshot.tabs.find((t) => t.tabId === snapshot.selfTabId)
-      if (own) return { target: `site:${own.origin}`, targetTabId: own.tabId }
-      return { target: 'global', targetTabId: null }
+    // The user asked for Global, or for a site whose tab has since closed but
+    // whose settings are still theirs to edit.
+    if (this.chosen) {
+      if (target === 'global') return { target: 'global', targetTabId: null }
+      const origin = target.slice('site:'.length)
+      const reopened = snapshot.tabs.find((t) => t.origin === origin)
+      return reopened
+        ? { target, targetTabId: reopened.tabId }
+        : { target, targetTabId: null }
     }
+    // Nothing chosen yet: open on the tab this surface is running in, which is
+    // what someone pressing the shortcut on a noisy page is asking for.
     const own = snapshot.tabs.find((t) => t.tabId === snapshot.selfTabId)
     if (own) return { target: `site:${own.origin}`, targetTabId: own.tabId }
     return { target: 'global', targetTabId: null }
@@ -193,6 +206,7 @@ export class UiStore {
   // ------------------------------------------------------------- selection
 
   selectTarget(target: TargetKey, tabId: number | null): void {
+    this.chosen = true
     this.set({ target, targetTabId: tabId })
   }
 

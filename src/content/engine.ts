@@ -36,6 +36,8 @@ export class ContentEngine {
   private ready: Promise<void> | null = null
   private readonly sources = new WeakMap<HTMLMediaElement, MediaElementAudioSourceNode>()
   private readonly hooked = new Set<HTMLMediaElement>()
+  /** Elements the browser refused to route, so scans stop retrying them. */
+  private readonly refused = new WeakSet<HTMLMediaElement>()
   private chain: ChainState | null = null
   private silentSince: number | null = null
   private reportedSilent = false
@@ -66,7 +68,7 @@ export class ContentEngine {
    * MutationObserver.
    */
   async hook(element: HTMLMediaElement): Promise<void> {
-    if (this.sources.has(element)) return
+    if (this.sources.has(element) || this.refused.has(element)) return
     const ctx = await this.ensureContext()
     if (!this.graph) return
 
@@ -76,7 +78,9 @@ export class ContentEngine {
     } catch {
       // Already routed by another script, or the element is in a state the
       // browser refuses. Leaving it on the normal playback path is correct:
-      // the audio still plays, it just is not processed.
+      // the audio still plays, it just is not processed. Remembered so the
+      // next DOM scan does not try again, and again.
+      this.refused.add(element)
       return
     }
     this.sources.set(element, source)
@@ -112,7 +116,14 @@ export class ContentEngine {
     if (!this.graph) return null
     const reading = this.graph.readMeter()
 
-    const playing = [...this.hooked].some((el) => !el.paused && !el.muted && el.volume > 0)
+    // Silence we caused ourselves is not a fault. The meter sits after the
+    // output gain, so a muted or fully-closed chain reads zero by design, and
+    // warning about it would be telling the user their own mute is broken.
+    const silencedByChain =
+      this.chain !== null && (this.chain.gain.mute || this.chain.gain.level === 0)
+    const playing =
+      !silencedByChain && [...this.hooked].some((el) => !el.paused && !el.muted && el.volume > 0)
+
     if (!playing || reading.peak > 0.0005) {
       this.silentSince = null
       if (this.reportedSilent) {

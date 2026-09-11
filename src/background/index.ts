@@ -56,11 +56,14 @@ function toast(kind: 'info' | 'warn' | 'error', text: string): void {
 
 async function snapshot(selfTabId: number | null): Promise<StateSnapshot> {
   await registry.refresh()
+  const tabs = registry.list()
   return {
     settings: store.current(),
-    tabs: registry.list(),
+    tabs,
     selfTabId,
-    engineReady: true,
+    // Honest rather than hardcoded: the engine is only actually running where
+    // a page has routed at least one element.
+    engineReady: tabs.some((tab) => tab.hooked > 0),
   }
 }
 
@@ -90,19 +93,48 @@ async function readBackground(): Promise<Background> {
  * its own instruction.
  */
 const sentRates = new Map<number, number>()
+/** Last chain sent to each tab, so a drag does not resend identical chains. */
+const sentChains = new Map<number, string>()
+
+/**
+ * Coalesces the work a mutation triggers.
+ *
+ * Dragging a slider produces a patch per animation frame, and each one used to
+ * fan out a tabs.query, a message to every tab and a full state broadcast.
+ * Bursts collapse into one pass on a short timer, which still lands well
+ * within a frame or two of the last movement.
+ */
+const SYNC_DEBOUNCE_MS = 40
+let syncTimer: ReturnType<typeof setTimeout> | null = null
+
+function scheduleSync(): void {
+  if (syncTimer) return
+  syncTimer = setTimeout(() => {
+    syncTimer = null
+    void pushChains().then(publishState)
+  }, SYNC_DEBOUNCE_MS)
+}
 
 async function pushChains(): Promise<void> {
   const settings = store.current()
   await registry.refresh()
   for (const tab of registry.list()) {
     const chain = resolveChain(settings, tab.origin)
-    await platform.tabs.sendMessage(tab.tabId, { type: 'content:chain', chain } satisfies ContentCommand)
+    const signature = JSON.stringify(chain)
+    if (sentChains.get(tab.tabId) !== signature) {
+      sentChains.set(tab.tabId, signature)
+      await platform.tabs.sendMessage(tab.tabId, {
+        type: 'content:chain',
+        chain,
+      } satisfies ContentCommand)
+    }
     await pushRate(tab.tabId, chain.speed.on && !chain.bypass ? chain.speed.rate : 1)
   }
 }
 
 async function pushChain(tabId: number, origin: string): Promise<void> {
   const chain = resolveChain(store.current(), origin)
+  sentChains.set(tabId, JSON.stringify(chain))
   await platform.tabs.sendMessage(tabId, { type: 'content:chain', chain } satisfies ContentCommand)
   await pushRate(tabId, chain.speed.on && !chain.bypass ? chain.speed.rate : 1)
 }
@@ -132,7 +164,7 @@ async function handleUiRequest(request: UiRequest, senderTabId: number | null): 
 
     case 'ui:patch-chain':
       store.patchChain(request.target, request.patch)
-      await pushChains()
+      scheduleSync()
       return { ok: true }
 
     case 'ui:reset-chain':
@@ -265,11 +297,13 @@ chrome.runtime.onConnect.addListener((port) => {
 
   port.onMessage.addListener((message: UiRequest & { requestId?: number }) => {
     void handleUiRequest(message, senderTabId)
-      .then(async (response) => {
+      .then((response) => {
         if (message.requestId !== undefined) {
           port.postMessage({ requestId: message.requestId, response })
         }
-        await publishState()
+        // Coalesced: a slider drag sends one of these per frame, and a full
+        // snapshot broadcast per frame is pure waste.
+        scheduleSync()
       })
       .catch((err) => {
         const response: UiResponse = {
@@ -299,6 +333,16 @@ chrome.runtime.onConnect.addListener((port) => {
 chrome.runtime.onMessage.addListener((message: ToBackground, sender, sendResponse) => {
   const senderTabId = sender.tab?.id ?? null
 
+  // Metering is high-frequency and one-way: relay it and get out. No state
+  // publish, no chain resolve, no response.
+  if (message?.type === 'content:level') {
+    if (senderTabId !== null) {
+      levels[senderTabId] = message.level
+      broadcast({ type: 'meters', levels })
+    }
+    return false
+  }
+
   if (message?.type === 'content:report') {
     if (senderTabId !== null) {
       registry.record(senderTabId, {
@@ -307,12 +351,7 @@ chrome.runtime.onMessage.addListener((message: ToBackground, sender, sendRespons
         hooked: message.hooked,
         silent: message.silent,
       })
-      if (message.level) {
-        levels[senderTabId] = message.level
-        broadcast({ type: 'meters', levels })
-      } else {
-        void publishState()
-      }
+      void publishState()
     }
     // Answer with the chain and the metering state, so a freshly loaded page
     // configures itself from one round trip instead of waiting for a push.
@@ -396,6 +435,7 @@ chrome.action.onClicked.addListener((tab) => {
 chrome.tabs.onRemoved.addListener((tabId) => {
   registry.forget(tabId)
   sentRates.delete(tabId)
+  sentChains.delete(tabId)
   delete levels[tabId]
   void publishState()
 })
@@ -408,6 +448,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
       // resent even when its value has not changed.
       registry.forget(tabId)
       sentRates.delete(tabId)
+      sentChains.delete(tabId)
       const origin = originOf(changeInfo.url)
       if (origin) await pushChain(tabId, origin)
     }

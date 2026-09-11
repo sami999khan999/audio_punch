@@ -9,7 +9,7 @@ import type { Background, TargetKey } from '../../shared/types.ts'
 import { el } from '../core/dom.ts'
 import { createPill } from '../controls/switch.ts'
 import { createSlider } from '../controls/slider.ts'
-import { PARAMS } from '../../shared/params.ts'
+import type { ParamSpec } from '../../shared/params.ts'
 import type { UiState, UiStore } from '../core/store.ts'
 
 export interface SideHandle {
@@ -20,8 +20,14 @@ export interface SideHandle {
 /** chrome.storage is unlimited here, but a 200MB video would still stall. */
 const MAX_BYTES = 80 * 1024 * 1024
 
-const DIM_SPEC = { ...PARAMS.reverb.mix, label: 'Dim', default: 0.45 }
-const BLUR_SPEC = { min: 0, max: 40, step: 1, default: 0, unit: 'px', label: 'Blur', curve: 'lin' as const }
+/** Backdrop legibility controls. Their own specs rather than a borrowed one,
+ *  so changing a DSP range cannot quietly move them. */
+const DIM_SPEC: ParamSpec = {
+  min: 0, max: 0.9, step: 0.01, default: 0.45, unit: '', label: 'Dim', curve: 'lin',
+}
+const BLUR_SPEC: ParamSpec = {
+  min: 0, max: 40, step: 1, default: 0, unit: 'px', label: 'Blur', curve: 'lin',
+}
 
 export function createSide(store: UiStore, currentTarget: () => TargetKey): SideHandle {
   let state = store.get()

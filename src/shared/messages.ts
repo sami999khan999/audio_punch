@@ -62,8 +62,6 @@ export type Broadcast =
   | { type: 'meters'; levels: Record<number, LevelReading> }
   | { type: 'toast'; kind: 'info' | 'warn' | 'error'; text: string }
   | { type: 'background'; background: Background }
-  | { type: 'overlay:toggle' }
-  | { type: 'overlay:open' }
 
 /**
  * Service worker -> content script.
@@ -80,7 +78,12 @@ export type ContentCommand =
   | { type: 'content:probe-media' }
   | { type: 'content:meters'; enabled: boolean }
 
-/** Content script -> service worker (in addition to UiRequest). */
+/**
+ * Content script -> service worker.
+ *
+ * A report describes what the page has, and gets the resolved chain back in
+ * the reply. It is sent only when something actually changes.
+ */
 export type ContentReport = {
   type: 'content:report'
   hasMediaElements: boolean
@@ -89,8 +92,16 @@ export type ContentReport = {
   hooked: number
   /** Routed and playing but producing no signal — see TabInfo.silent. */
   silent: boolean
-  /** Output level, sent only while a UI is watching. */
-  level?: LevelReading
 }
 
-export type ToBackground = UiRequest | ContentReport
+/**
+ * Metering runs at ~24Hz while a UI is open. It is deliberately a separate,
+ * fire-and-forget message: sending it as a full report made every frame
+ * re-resolve the chain, reply, and re-apply forty AudioParams.
+ */
+export type ContentLevel = {
+  type: 'content:level'
+  level: LevelReading
+}
+
+export type ToBackground = UiRequest | ContentReport | ContentLevel

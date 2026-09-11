@@ -168,11 +168,12 @@ function mount(): void {
     shortcuts.update(state)
     settings.update(state)
 
-    connection.textContent = state.connected
-      ? state.snapshot.engineReady
-        ? 'Engine running'
-        : 'Engine idle'
-      : 'Reconnecting…'
+    const processing = state.snapshot.tabs.filter((tab) => tab.hooked > 0).length
+    connection.textContent = !state.connected
+      ? 'Reconnecting…'
+      : processing === 0
+        ? 'No audio routed'
+        : `Processing ${processing} tab${processing === 1 ? '' : 's'}`
 
     root.style.setProperty('--ap-accent', state.snapshot.settings.ui.accent)
     root.setAttribute('data-reduce-motion', String(state.snapshot.settings.ui.reduceMotion))

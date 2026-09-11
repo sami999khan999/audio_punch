@@ -72,6 +72,12 @@ try {
   // document_idle, plus a moment for the media report to reach the worker.
   await page.waitForTimeout(700)
 
+  // Checked explicitly and early: a throw during content-script setup takes the
+  // message listener with it, and every later check then fails as an unhelpful
+  // "receiving end does not exist". This has caught two temporal-dead-zone
+  // bugs where state was read by a callback fired during construction.
+  check('the content script loads without throwing', pageErrors.length === 0, pageErrors.join('; '))
+
   // The dashboard is our window into the extension.
   const dash = await context.newPage()
   const dashErrors = []

@@ -31,8 +31,9 @@ function signature(snapshot: StateSnapshot): string {
     .join('|')
 }
 
+/** One status line per card. The silent case is carried by its own chip, so it
+ *  is deliberately not repeated here. */
 function statusOf(tab: TabInfo, globalOn: boolean, pinned: boolean): string {
-  if (tab.silent) return 'No signal — protected or cross-origin audio'
   if (tab.hooked === 0) return tab.hasMediaElements ? 'Ready' : 'No media yet'
   if (globalOn && !pinned) return 'Following global'
   return 'Own chain'
@@ -41,6 +42,8 @@ function statusOf(tab: TabInfo, globalOn: boolean, pinned: boolean): string {
 export function createSources(options: SourcesOptions): SourcesHandle {
   const root = el('div', { class: 'ap-cards ap-scroll', role: 'listbox', 'aria-label': 'Sources' })
   const levelSliders = new Map<string, SliderHandle>()
+  /** Readouts beside each card's slider, updated in step with it. */
+  const levelValues = new Map<string, HTMLElement>()
   let rendered = ''
 
   function card(opts: {
@@ -65,10 +68,8 @@ export function createSources(options: SourcesOptions): SourcesHandle {
     levelSliders.set(opts.key, slider)
 
     const value = el('span', { class: 'ap-num ap-tile-val' })
-    const setValue = () => {
-      value.textContent = `${Math.round(opts.chain.gain.level * 100)}%`
-    }
-    setValue()
+    value.textContent = `${Math.round(opts.chain.gain.level * 100)}%`
+    levelValues.set(opts.key, value)
 
     return el(
       'div',
@@ -106,6 +107,7 @@ export function createSources(options: SourcesOptions): SourcesHandle {
   function rebuild(state: UiState): void {
     for (const slider of levelSliders.values()) slider.destroy()
     levelSliders.clear()
+    levelValues.clear()
 
     const { settings, tabs } = state.snapshot
     const globalOn = settings.global.on
@@ -159,11 +161,21 @@ export function createSources(options: SourcesOptions): SourcesHandle {
         name: prettyOrigin(tab.origin),
         sub: tab.title || prettyOrigin(tab.origin),
         chain,
+        // One chip for where the settings come from, one only if something is
+        // wrong. "Global" and "Following global" said the same thing twice.
         tags: [
-          following ? el('span', { class: 'ap-chip', 'data-tone': 'accent', text: 'Global' }) : null,
           pinned ? el('span', { class: 'ap-chip', text: 'Pinned' }) : null,
-          tab.silent ? el('span', { class: 'ap-chip', 'data-tone': 'hot', text: 'No signal' }) : null,
-          el('span', { class: 'ap-chip', text: statusOf(tab, globalOn, pinned) }),
+          tab.silent
+            ? el('span', {
+                class: 'ap-chip',
+                'data-tone': 'hot',
+                text: 'No signal — cross-origin audio',
+              })
+            : el('span', {
+                class: 'ap-chip',
+                'data-tone': following ? 'accent' : 'plain',
+                text: statusOf(tab, globalOn, pinned),
+              }),
         ].filter(Boolean) as Node[],
       })
     })
@@ -192,12 +204,17 @@ export function createSources(options: SourcesOptions): SourcesHandle {
       }
       // Levels still track live changes without a rebuild.
       const { settings } = state.snapshot
-      levelSliders.get('global')?.set(settings.global.chain.gain.level)
+      const show = (key: string, level: number) => {
+        levelSliders.get(key)?.set(level)
+        const value = levelValues.get(key)
+        if (value) value.textContent = `${Math.round(level * 100)}%`
+      }
+      show('global', settings.global.chain.gain.level)
       for (const tab of state.snapshot.tabs) {
         const site = settings.sites[tab.origin]
         const following = settings.global.on && site?.ignoreGlobal !== true
         const chain = following ? settings.global.chain : (site?.chain ?? settings.global.chain)
-        levelSliders.get(`tab:${tab.tabId}`)?.set(chain.gain.level)
+        show(`tab:${tab.tabId}`, chain.gain.level)
       }
     },
     destroy() {

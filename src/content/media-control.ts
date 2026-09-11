@@ -19,17 +19,28 @@ export interface MediaController {
   destroy(): void
 }
 
+/** Debounce for the DOM observer. Sites mutate constantly; scanning on every
+ *  mutation is what makes an extension show up in a page's performance trace. */
+const SCAN_DEBOUNCE_MS = 250
+
 /**
- * Collects media elements including those inside open shadow roots — plenty of
+ * Collects media elements, including those inside open shadow roots — plenty of
  * sites wrap their player in a custom element.
+ *
+ * The light pass is a plain `audio, video` query, which the browser answers
+ * from its selector index. The deep pass walks every element looking for shadow
+ * roots and is far more expensive, so it is kept off the hot path: the cached
+ * result is refreshed on a debounced schedule, never per mutation and never per
+ * meter frame.
  */
-function collect(root: ParentNode, found: HTMLMediaElement[] = []): HTMLMediaElement[] {
-  for (const el of root.querySelectorAll<HTMLElement>('audio, video, *')) {
-    if (el instanceof HTMLMediaElement) {
-      found.push(el)
-    } else if (el.shadowRoot) {
-      collect(el.shadowRoot, found)
-    }
+function collectLight(): HTMLMediaElement[] {
+  return Array.from(document.querySelectorAll<HTMLMediaElement>('audio, video'))
+}
+
+function collectDeep(root: ParentNode, found: HTMLMediaElement[] = []): HTMLMediaElement[] {
+  for (const el of root.querySelectorAll<HTMLElement>('*')) {
+    if (el instanceof HTMLMediaElement) found.push(el)
+    else if (el.shadowRoot) collectDeep(el.shadowRoot, found)
   }
   return found
 }
@@ -40,12 +51,26 @@ export function createMediaController(
 ): MediaController {
   let rate = 1
   let lastSignature = ''
+  /** Last known media elements. Every read goes through this, never the DOM. */
+  let cached: HTMLMediaElement[] = []
+  let deepDue = 0
+  let debounce: ReturnType<typeof setTimeout> | null = null
 
   function elements(): HTMLMediaElement[] {
-    return collect(document)
+    const light = collectLight()
+    // A deep walk only when the cheap query found nothing new and enough time
+    // has passed — that is the only case where a shadow-root player could be
+    // hiding from us.
+    const now = Date.now()
+    if (now >= deepDue) {
+      deepDue = now + 2000
+      const deep = collectDeep(document)
+      if (deep.length > light.length) return deep
+    }
+    return light
   }
 
-  function applyRate(list = elements()): void {
+  function applyRate(list = cached): void {
     for (const element of list) {
       // Writing an identical rate still fires ratechange on some sites and can
       // fight their own player logic, so only write real changes.
@@ -55,6 +80,7 @@ export function createMediaController(
 
   function scan(): void {
     const found = elements()
+    cached = found
     for (const element of found) void engine.hook(element)
     if (rate !== 1) applyRate(found)
 
@@ -65,7 +91,15 @@ export function createMediaController(
     }
   }
 
-  const observer = new MutationObserver(() => scan())
+  function scheduleScan(): void {
+    if (debounce) return
+    debounce = setTimeout(() => {
+      debounce = null
+      scan()
+    }, SCAN_DEBOUNCE_MS)
+  }
+
+  const observer = new MutationObserver(scheduleScan)
   observer.observe(document.documentElement, { childList: true, subtree: true })
 
   // Players routinely reset playbackRate when a new source loads, and an
@@ -89,11 +123,12 @@ export function createMediaController(
       rate = next
       applyRate()
     },
-    count: () => elements().length,
-    hasMedia: () => elements().length > 0,
+    count: () => cached.length,
+    hasMedia: () => cached.length > 0,
     scan,
     destroy() {
       observer.disconnect()
+      if (debounce) clearTimeout(debounce)
       document.removeEventListener('play', onPlay, true)
       document.removeEventListener('loadeddata', onPlay, true)
       rate = 1
