@@ -1,22 +1,26 @@
 /**
- * One tab's processing graph.
+ * One page's processing graph.
  *
  * Signal flow, in order:
  *
- *   source -> input -> gate -> filter -> eq -> tone -> comp -> pitch
- *          -> width -> reverb -> delay -> pan -> limiter -> output
- *          -> meter -> destination
+ *   sources -> input -> gate -> filter -> eq -> tone -> comp -> pitch
+ *           -> width -> reverb -> delay -> pan -> limiter -> output
+ *           -> meter -> destination
  *
  * `gain`, `pan` and the meter are permanent. Everything else is a module that
  * is linked in only while it is doing something: the graph compares the set of
  * active modules against the last one and relinks only when it changes, so
  * turning a knob never touches the topology.
  *
- * The output MUST reach the context destination. Capturing a tab silences its
- * own playback, so a graph that fails to connect is not a missing effect — it
- * is a silent tab. `assertAudible` guards that on every relink.
+ * Every media element on the page feeds the one input node, so a page with
+ * several players is mixed rather than fought over.
+ *
+ * The output MUST reach the context destination. Routing an element through
+ * `createMediaElementSource` takes its audio out of the normal playback path,
+ * so a graph that fails to connect is not a missing effect — it is a silent
+ * page. `assertAudible` guards that on every relink.
  */
-import type { ChainState, LevelReading } from '../../shared/types.ts'
+import type { ChainState, LevelReading } from '../shared/types.ts'
 import { ramp, type ChainModule } from './module.ts'
 import { EqModule, ToneModule } from './eq.ts'
 import { FilterModule } from './filters.ts'
@@ -39,11 +43,8 @@ const MODULE_ORDER = [
   'limiter',
 ] as const
 
-export class TabGraph {
-  readonly tabId: number
+export class PageGraph {
   private readonly ctx: AudioContext
-  private readonly stream: MediaStream
-  private readonly source: MediaStreamAudioSourceNode
   private readonly inputGain: GainNode
   private readonly panner: StereoPannerNode
   private readonly outputGain: GainNode
@@ -52,12 +53,8 @@ export class TabGraph {
   private activeSignature = ''
   private disposed = false
 
-  constructor(ctx: AudioContext, tabId: number, stream: MediaStream) {
+  constructor(ctx: AudioContext) {
     this.ctx = ctx
-    this.tabId = tabId
-    this.stream = stream
-
-    this.source = ctx.createMediaStreamSource(stream)
 
     // Force stereo at the head of the chain. A mono source would otherwise
     // make the mid/side maths collapse one side to silence.
@@ -83,17 +80,14 @@ export class TabGraph {
       ['limiter', new LimiterModule(ctx)],
     ])
 
-    this.source.connect(this.inputGain)
     this.panner.connect(this.outputGain)
     this.outputGain.connect(this.meter.node)
     this.meter.node.connect(ctx.destination)
   }
 
-  /** Fires when the captured tab goes away (closed, navigated, stopped). */
-  onEnded(handler: () => void): void {
-    for (const track of this.stream.getTracks()) {
-      track.addEventListener('ended', handler, { once: true })
-    }
+  /** The node every media element source connects into. */
+  get input(): AudioNode {
+    return this.inputGain
   }
 
   apply(chain: ChainState): void {
@@ -142,8 +136,24 @@ export class TabGraph {
    */
   private assertAudible(): void {
     if (this.panner.numberOfOutputs === 0) {
-      throw new Error(`Tab ${this.tabId}: output path is not connected`)
+      throw new Error('Audio Punch: the output path is not connected')
     }
+  }
+
+  /**
+   * Flattens the graph to a clean pass-through without tearing it down.
+   *
+   * Disposing is not an option once elements are routed: `createMediaElementSource`
+   * is irreversible, so a disposed graph means a permanently silent page. This
+   * is the safe way to "turn the extension off" for a page.
+   */
+  bypass(): void {
+    const now = this.ctx.currentTime
+    this.relink([])
+    this.activeSignature = ''
+    ramp(this.inputGain.gain, 1, now)
+    ramp(this.outputGain.gain, 1, now)
+    ramp(this.panner.pan, 0, now)
   }
 
   readMeter(): LevelReading {
@@ -160,8 +170,6 @@ export class TabGraph {
   dispose(): void {
     if (this.disposed) return
     this.disposed = true
-    for (const track of this.stream.getTracks()) track.stop()
-    this.source.disconnect()
     this.inputGain.disconnect()
     this.panner.disconnect()
     this.outputGain.disconnect()

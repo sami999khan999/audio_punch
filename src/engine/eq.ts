@@ -1,7 +1,7 @@
 /**
  * Graphic EQ and tone shelves.
  */
-import { EQ_FREQUENCIES, type ChainState } from '../../shared/types.ts'
+import { EQ_FREQUENCIES, type ChainState } from '../shared/types.ts'
 import { ramp, type ChainModule } from './module.ts'
 
 /** Q giving roughly one-octave bands, so adjacent sliders overlap smoothly. */

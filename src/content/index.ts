@@ -1,17 +1,23 @@
 /**
  * Content script entry point.
  *
- * Runs on every http(s) page. It stays inert — no overlay in the DOM, no
- * listeners beyond a message port — until the mixer is actually opened, so the
- * cost to a page that never uses Audio Punch is close to nothing.
+ * Runs on every http(s) page and owns two things: the audio engine for this
+ * page, and the mixer overlay. The engine starts only once a media element
+ * actually exists, and the overlay is built only when first opened, so a page
+ * that never plays anything pays almost nothing.
  */
+import type { ChainState } from '../shared/types.ts'
 import type { ContentCommand, ContentReport } from '../shared/messages.ts'
 import { UiStore } from '../ui/core/store.ts'
+import { ContentEngine } from './engine.ts'
 import { createMediaController } from './media-control.ts'
 import { createKeymap } from './keymap.ts'
 import { createOverlay, type OverlayHandle } from './overlay.ts'
 
-// Frames would each build their own overlay; only the top document gets one.
+const METER_INTERVAL_MS = 1000 / 24
+
+// Frames would each build their own overlay and their own engine; only the top
+// document gets them. Media inside an iframe is that frame's own script's job.
 if (window.top === window.self) {
   start()
 }
@@ -19,16 +25,59 @@ if (window.top === window.self) {
 function start(): void {
   const store = new UiStore()
   let overlay: OverlayHandle | null = null
+  let chain: ChainState | null = null
+  let meterTimer: ReturnType<typeof setInterval> | null = null
 
-  const media = createMediaController((hasMediaElements, count) => {
-    const report: ContentReport = { type: 'content:media-report', hasMediaElements, count }
-    void chrome.runtime.sendMessage(report).catch(() => undefined)
-  })
+  const engine = new ContentEngine(() => report())
+  const media = createMediaController(engine, () => report())
+  // Both are constructed before anything can call back into them.
+  media.scan()
 
   /**
-   * The overlay is built on first use. Doing it at document_idle would mean
-   * every page in the browser carrying a shadow root and a stylesheet it will
-   * probably never show.
+   * Tells the worker what this page has, and takes back the chain it should be
+   * running. One round trip configures a freshly loaded page.
+   */
+  function report(level?: ReturnType<ContentEngine['readLevel']>): void {
+    const status = engine.status()
+    const message: ContentReport = {
+      type: 'content:report',
+      hasMediaElements: media.hasMedia(),
+      count: media.count(),
+      hooked: status.hooked,
+      silent: status.silent,
+      ...(level ? { level } : {}),
+    }
+    void chrome.runtime
+      .sendMessage(message)
+      .then((reply: { chain?: ChainState; meters?: boolean } | undefined) => {
+        if (reply?.chain) applyChain(reply.chain)
+        if (reply?.meters !== undefined) setMetering(reply.meters)
+      })
+      .catch(() => {
+        // The worker is asleep or reloading; the next report will land.
+      })
+  }
+
+  function applyChain(next: ChainState): void {
+    chain = next
+    engine.apply(next)
+  }
+
+  function setMetering(enabled: boolean): void {
+    if (enabled && !meterTimer) {
+      meterTimer = setInterval(() => {
+        const level = engine.readLevel()
+        if (level) report(level)
+      }, METER_INTERVAL_MS)
+    } else if (!enabled && meterTimer) {
+      clearInterval(meterTimer)
+      meterTimer = null
+    }
+  }
+
+  /**
+   * The overlay is built on first use. Doing it eagerly would mean every page
+   * in the browser carrying a shadow root and a stylesheet it will never show.
    */
   function ensureOverlay(): OverlayHandle {
     if (overlay) return overlay
@@ -36,6 +85,7 @@ function start(): void {
     overlay = createOverlay(store)
     store.subscribe((state) => overlay?.update(state))
     installKeyHandler(overlay)
+    media.scan()
     return overlay
   }
 
@@ -54,7 +104,6 @@ function start(): void {
       (event) => {
         if (!handle.isOpen()) return
         const target = event.composedPath()[0]
-        // Typing into the template-name field must reach the field.
         if (
           target instanceof HTMLElement &&
           (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)
@@ -81,16 +130,29 @@ function start(): void {
       case 'content:close-overlay':
         overlay?.close()
         break
+      case 'content:chain':
+        applyChain(message.chain)
+        break
       case 'content:set-rate':
         media.setRate(message.rate)
         break
+      case 'content:meters':
+        setMetering(message.enabled)
+        break
       case 'content:probe-media':
+        media.scan()
         break
     }
-    sendResponse({ ok: true, hasMedia: media.hasMedia(), count: media.count() })
+    const status = engine.status()
+    sendResponse({
+      ok: true,
+      hasMedia: media.hasMedia(),
+      count: media.count(),
+      hooked: status.hooked,
+      chain: chain !== null,
+    })
     return false
   })
 
-  // Speed must not outlive the page's use of it.
   window.addEventListener('pagehide', () => media.destroy(), { once: true })
 }

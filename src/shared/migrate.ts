@@ -172,11 +172,20 @@ export function migrate(raw: unknown): { settings: Settings; warnings: string[] 
     settings.ui = {
       overlayHeight:
         typeof ui.overlayHeight === 'number' && Number.isFinite(ui.overlayHeight)
-          ? Math.min(900, Math.max(260, ui.overlayHeight))
+          // 0 is the sentinel for "fill the viewport".
+          ? (ui.overlayHeight === 0 ? 0 : Math.min(2000, Math.max(320, ui.overlayHeight)))
           : DEFAULT_UI.overlayHeight,
       accent: typeof ui.accent === 'string' && /^#[0-9a-f]{6}$/i.test(ui.accent) ? ui.accent : DEFAULT_UI.accent,
       reduceMotion: ui.reduceMotion === true,
       meters: ui.meters !== false,
+      backgroundDim:
+        typeof ui.backgroundDim === 'number' && Number.isFinite(ui.backgroundDim)
+          ? Math.min(0.9, Math.max(0, ui.backgroundDim))
+          : DEFAULT_UI.backgroundDim,
+      backgroundBlur:
+        typeof ui.backgroundBlur === 'number' && Number.isFinite(ui.backgroundBlur)
+          ? Math.min(40, Math.max(0, ui.backgroundBlur))
+          : DEFAULT_UI.backgroundBlur,
     }
   }
 

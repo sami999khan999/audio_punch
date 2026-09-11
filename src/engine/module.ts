@@ -5,7 +5,7 @@
  * graph asks each module whether it is active; inactive modules are unlinked
  * entirely rather than neutralised, so an unused reverb costs nothing.
  */
-import type { ChainState, ModuleId } from '../../shared/types.ts'
+import type { ChainState, ModuleId } from '../shared/types.ts'
 
 export interface ChainModule {
   readonly id: ModuleId

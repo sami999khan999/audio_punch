@@ -18,8 +18,8 @@ const outDir = resolve(root, 'dist', target)
  */
 const IIFE_ENTRIES: Array<{ entry: string; out: string }> = [
   { entry: 'src/content/index.ts', out: 'content.js' },
-  { entry: 'src/offscreen/worklets/pitch-shifter.worklet.ts', out: 'worklets/pitch-shifter.js' },
-  { entry: 'src/offscreen/worklets/gate.worklet.ts', out: 'worklets/gate.js' },
+  { entry: 'src/engine/worklets/pitch-shifter.worklet.ts', out: 'worklets/pitch-shifter.js' },
+  { entry: 'src/engine/worklets/gate.worklet.ts', out: 'worklets/gate.js' },
 ]
 
 function extensionPlugin(): Plugin {
@@ -63,7 +63,6 @@ export default defineConfig({
     rollupOptions: {
       input: {
         background: resolve(root, 'src/background/index.ts'),
-        offscreen: resolve(root, 'offscreen.html'),
         dashboard: resolve(root, 'dashboard.html'),
       },
       output: {

@@ -7,6 +7,7 @@
  *   UI  <--Broadcast--         background      <--EngineEvent--               engine
  */
 import type {
+  Background,
   ChainState,
   LevelReading,
   ModuleId,
@@ -18,7 +19,6 @@ import type {
 } from './types.ts'
 
 export const PORT_UI = 'audio-punch:ui'
-export const PORT_ENGINE = 'audio-punch:engine'
 
 /** Requests a UI surface sends to the service worker. */
 export type UiRequest =
@@ -27,8 +27,6 @@ export type UiRequest =
   | { type: 'ui:reset-chain'; target: TargetKey }
   | { type: 'ui:set-global-on'; on: boolean }
   | { type: 'ui:set-ignore-global'; origin: string; value: boolean }
-  | { type: 'ui:arm'; tabId: number; confirmDrm?: boolean }
-  | { type: 'ui:release'; tabId: number }
   | { type: 'ui:mute-all'; value?: boolean }
   | { type: 'ui:bypass-all'; value?: boolean }
   | { type: 'ui:save-template'; name: string; description: string; modules: ModuleId[]; source: TargetKey }
@@ -44,10 +42,18 @@ export type UiRequest =
   | { type: 'ui:export' }
   | { type: 'ui:open-dashboard' }
   | { type: 'ui:meters'; enabled: boolean }
+  | { type: 'ui:get-background' }
+  | { type: 'ui:set-background'; background: Background }
 
 /** Replies the service worker sends back to a single request. */
 export type UiResponse =
-  | { ok: true; snapshot?: StateSnapshot; settings?: Settings; template?: Template }
+  | {
+      ok: true
+      snapshot?: StateSnapshot
+      settings?: Settings
+      template?: Template
+      background?: Background
+    }
   | { ok: false; error: string }
 
 /** Messages pushed from the service worker to every connected UI. */
@@ -55,38 +61,36 @@ export type Broadcast =
   | { type: 'state'; snapshot: StateSnapshot }
   | { type: 'meters'; levels: Record<number, LevelReading> }
   | { type: 'toast'; kind: 'info' | 'warn' | 'error'; text: string }
+  | { type: 'background'; background: Background }
   | { type: 'overlay:toggle' }
   | { type: 'overlay:open' }
 
-/** Service worker -> offscreen engine. */
-export type EngineCommand =
-  | { type: 'engine:attach'; tabId: number; streamId: string; chain: ChainState }
-  | { type: 'engine:detach'; tabId: number }
-  | { type: 'engine:detach-all' }
-  | { type: 'engine:chain'; tabId: number; chain: ChainState }
-  | { type: 'engine:meters'; enabled: boolean }
-
-/** Offscreen engine -> service worker. */
-export type EngineEvent =
-  | { type: 'engine:ready' }
-  | { type: 'engine:attached'; tabId: number }
-  | { type: 'engine:error'; tabId: number | null; message: string }
-  | { type: 'engine:ended'; tabId: number }
-  | { type: 'engine:meters'; levels: Record<number, LevelReading> }
-
-/** Service worker -> content script. */
+/**
+ * Service worker -> content script.
+ *
+ * The engine now lives in the content script, so the worker's job is to send
+ * each page the chain it resolved for that page's origin.
+ */
 export type ContentCommand =
   | { type: 'content:toggle-overlay' }
   | { type: 'content:open-overlay' }
   | { type: 'content:close-overlay' }
+  | { type: 'content:chain'; chain: ChainState }
   | { type: 'content:set-rate'; rate: number }
   | { type: 'content:probe-media' }
+  | { type: 'content:meters'; enabled: boolean }
 
 /** Content script -> service worker (in addition to UiRequest). */
 export type ContentReport = {
-  type: 'content:media-report'
+  type: 'content:report'
   hasMediaElements: boolean
   count: number
+  /** Elements routed through the graph. */
+  hooked: number
+  /** Routed and playing but producing no signal — see TabInfo.silent. */
+  silent: boolean
+  /** Output level, sent only while a UI is watching. */
+  level?: LevelReading
 }
 
 export type ToBackground = UiRequest | ContentReport

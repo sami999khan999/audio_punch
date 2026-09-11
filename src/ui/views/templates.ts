@@ -9,7 +9,7 @@ import { MODULE_LABELS } from '../../shared/params.ts'
 import { MODULE_IDS, type TargetKey, type Template } from '../../shared/types.ts'
 import { prettyOrigin } from '../../shared/origin.ts'
 import { el } from '../core/dom.ts'
-import { createButton } from '../controls/toggle.ts'
+import { createPillEl } from '../controls/switch.ts'
 import type { UiState, UiStore } from '../core/store.ts'
 
 export interface TemplatesHandle {
@@ -22,14 +22,14 @@ export function createTemplatesView(store: UiStore): TemplatesHandle {
   let state = store.get()
 
   const list = el('div', { class: 'ap-list' })
-  const detail = el('div', { class: 'ap-card' })
+  const detail = el('div', { class: 'ap-glass ap-card' })
 
   const root = el('div', { class: 'ap-section' }, [
     el('div', {}, [
-      el('div', { class: 'ap-legend', style: 'margin-bottom:8px', text: 'Templates' }),
+      el('div', { class: 'ap-label', style: 'margin-bottom:8px', text: 'Templates' }),
       list,
       el('div', {
-        class: 'ap-strip-sub',
+        class: 'ap-note',
         style: 'white-space:normal;padding:10px 2px',
         text: 'Slots 1–9 are bound to Ctrl+1 through Ctrl+9 in the mixer, in this order.',
       }),
@@ -63,7 +63,7 @@ export function createTemplatesView(store: UiStore): TemplatesHandle {
     const templates = state.snapshot.settings.templates
     if (templates.length === 0) {
       list.replaceChildren(
-        el('div', { class: 'ap-strip-sub', style: 'white-space:normal;padding:8px 2px' }, [
+        el('div', { class: 'ap-note', style: 'white-space:normal;padding:8px 2px' }, [
           'No templates yet. Set a chain up in the mixer and use "Save as…".',
         ]),
       )
@@ -75,7 +75,7 @@ export function createTemplatesView(store: UiStore): TemplatesHandle {
         el(
           'div',
           {
-            class: 'ap-row',
+            class: 'ap-listrow',
             'data-selected': String(template.id === selectedId),
             onclick: () => {
               selectedId = template.id
@@ -83,21 +83,21 @@ export function createTemplatesView(store: UiStore): TemplatesHandle {
             },
           },
           [
-            el('span', { class: 'ap-readout', style: 'color:var(--ap-ink-faint)', text: index < 9 ? `${index + 1}` : '·' }),
-            el('div', { class: 'ap-row-main' }, [
-              el('div', { class: 'ap-row-title', text: template.name }),
+            el('span', { class: 'ap-num', style: 'color:var(--ap-ink-faint)', text: index < 9 ? `${index + 1}` : '·' }),
+            el('div', { class: 'ap-listrow-main' }, [
+              el('div', { class: 'ap-listrow-title', text: template.name }),
               el('div', {
-                class: 'ap-row-sub',
+                class: 'ap-listrow-sub',
                 text: template.modules.map((id) => MODULE_LABELS[id]).join(' · ') || 'Empty',
               }),
             ]),
-            createButton({
+            createPillEl({
               label: '↑',
               icon: true,
               title: 'Move up',
               onClick: () => move(template.id, -1),
             }),
-            createButton({
+            createPillEl({
               label: '↓',
               icon: true,
               title: 'Move down',
@@ -163,15 +163,15 @@ export function createTemplatesView(store: UiStore): TemplatesHandle {
 
     detail.replaceChildren(
       el('div', { class: 'ap-field' }, [
-        el('span', { class: 'ap-legend', text: 'Name' }),
+        el('span', { class: 'ap-label', text: 'Name' }),
         nameInput,
       ]),
       el('div', { class: 'ap-field' }, [
-        el('span', { class: 'ap-legend', text: 'What it is for' }),
+        el('span', { class: 'ap-label', text: 'What it is for' }),
         descInput,
       ]),
       el('div', { style: 'display:flex;gap:6px;margin-bottom:16px' }, [
-        createButton({
+        createPillEl({
           label: 'Save changes',
           onClick: () => {
             void store.send({
@@ -182,7 +182,7 @@ export function createTemplatesView(store: UiStore): TemplatesHandle {
             })
           },
         }),
-        createButton({
+        createPillEl({
           label: 'Delete',
           tone: 'hot',
           onClick: () => {
@@ -192,19 +192,19 @@ export function createTemplatesView(store: UiStore): TemplatesHandle {
         }),
       ]),
       el('div', { class: 'ap-field' }, [
-        el('span', { class: 'ap-legend', text: 'Modules it writes' }),
+        el('span', { class: 'ap-label', text: 'Modules it writes' }),
         moduleList,
         el('div', {
-          class: 'ap-row-sub',
+          class: 'ap-listrow-sub',
           style: 'margin-top:6px',
           text: 'Everything else on the target is left as it is.',
         }),
       ]),
       el('div', { class: 'ap-field' }, [
-        el('span', { class: 'ap-legend', text: 'Apply to' }),
+        el('span', { class: 'ap-label', text: 'Apply to' }),
         el('div', { style: 'display:flex;gap:6px' }, [
           targetSelect,
-          createButton({
+          createPillEl({
             label: 'Apply',
             onClick: () => {
               void store.send({
@@ -214,7 +214,7 @@ export function createTemplatesView(store: UiStore): TemplatesHandle {
               })
             },
           }),
-          createButton({
+          createPillEl({
             label: 'Remove',
             title: 'Restore what the target had before a template was applied',
             onClick: () => {

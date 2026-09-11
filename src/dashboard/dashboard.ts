@@ -12,6 +12,7 @@ import { createMixer } from '../ui/views/mixer.ts'
 import { createTemplatesView } from '../ui/views/templates.ts'
 import { createKeymapEditor } from '../ui/views/keymap-editor.ts'
 import { createSettingsView } from '../ui/views/io.ts'
+import type { Background } from '../shared/types.ts'
 
 type PaneId = 'mixer' | 'templates' | 'shortcuts' | 'settings'
 
@@ -45,20 +46,61 @@ function mount(): void {
   const shortcuts = createKeymapEditor(store)
   const settings = createSettingsView(store)
 
-  // The mixer brings its own top rail and a full-height body, so it gets a
+  // The mixer brings its own bar and a full-height body, so it gets a framed
   // shell of its own rather than sitting in the page's content column.
   const mixerShell = el(
     'div',
-    { class: 'ap-root', style: 'display:flex;flex-direction:column;height:min(720px, 78vh);border:1px solid rgba(0,0,0,.5);border-radius:8px;overflow:hidden;background:var(--ap-chassis)' },
+    {
+      class: 'ap-glass',
+      style:
+        'display:flex;flex-direction:column;height:min(900px,82vh);overflow:hidden;position:relative',
+    },
     [mixer.el],
   )
 
-  const content = el('div', {})
+  const content = el('div', { style: 'flex:1 1 auto;min-height:0' })
   const toastLayer = el('div', { class: 'ap-toasts', style: 'position:fixed' })
 
+  // The dashboard wears the same backdrop as the overlay, so the two surfaces
+  // read as one product rather than two.
+  const backdropMedia = el('div')
+  const backdrop = el('div', { class: 'ap-backdrop' }, [
+    backdropMedia,
+    el('div', { class: 'ap-backdrop-scrim' }),
+  ])
+  let renderedBackground = ''
+
+  function renderBackdrop(background: Background, dim: number, blur: number): void {
+    const key = `${background.kind}:${background.updatedAt}`
+    if (key !== renderedBackground) {
+      renderedBackground = key
+      if (background.kind === 'image') {
+        backdropMedia.replaceChildren(
+          el('img', { class: 'ap-backdrop-media', src: background.dataUrl, alt: '' }),
+        )
+      } else if (background.kind === 'video') {
+        const video = el('video', {
+          class: 'ap-backdrop-media',
+          src: background.dataUrl,
+          autoplay: true,
+          loop: true,
+          playsinline: true,
+        }) as HTMLVideoElement
+        video.muted = true
+        backdropMedia.replaceChildren(video)
+      } else {
+        backdropMedia.replaceChildren()
+      }
+    }
+    root.style.setProperty('--ap-bg-dim', String(background.kind === 'none' ? 0.86 : dim))
+    root.style.setProperty('--ap-bg-blur', `${blur}px`)
+  }
+
+  // `ap-panes` distinguishes these from the rack's module-group tabs, which
+  // share the ap-tab styling.
   const tabs = el(
     'div',
-    { class: 'ap-tabs', role: 'tablist' },
+    { class: 'ap-tabs ap-panes', role: 'tablist' },
     PANES.map((entry) =>
       el('button', {
         class: 'ap-tab',
@@ -73,14 +115,18 @@ function mount(): void {
     ),
   )
 
-  const connection = el('div', { class: 'ap-legend' })
+  const connection = el('div', { class: 'ap-label' })
 
   const root = el('div', { class: 'ap-root ap-page' }, [
+    backdrop,
     el('div', { class: 'ap-page-inner' }, [
       el('div', { class: 'ap-page-head' }, [
-        el('div', { class: 'ap-wordmark' }, ['Audio', el('span', { text: 'Punch' })]),
+        el('div', { class: 'ap-brand' }, [
+          el('b', { text: 'Audio' }),
+          el('span', { text: 'Punch' }),
+        ]),
         tabs,
-        el('div', { class: 'ap-rail-spacer' }),
+        el('div', { class: 'ap-spacer' }),
         connection,
       ]),
       content,
@@ -128,8 +174,13 @@ function mount(): void {
         : 'Engine idle'
       : 'Reconnecting…'
 
-    root.style.setProperty('--ap-lit', state.snapshot.settings.ui.accent)
+    root.style.setProperty('--ap-accent', state.snapshot.settings.ui.accent)
     root.setAttribute('data-reduce-motion', String(state.snapshot.settings.ui.reduceMotion))
+    renderBackdrop(
+      state.background,
+      state.snapshot.settings.ui.backgroundDim,
+      state.snapshot.settings.ui.backgroundBlur,
+    )
 
     toastLayer.replaceChildren(
       ...state.toasts.map((toast) =>

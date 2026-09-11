@@ -2,9 +2,12 @@
  * The equaliser.
  *
  * Curve and band sliders share one x-axis and one column grid, so dragging a
- * slider visibly deforms the curve directly above it. Splitting them into two
- * unrelated widgets — the usual approach — hides the relationship that makes
- * an EQ legible.
+ * band visibly deforms the curve directly above it. Splitting them into two
+ * unrelated widgets — the usual approach — hides the relationship that makes an
+ * EQ legible.
+ *
+ * Each band fills from the centre line outwards, so cut and boost are told
+ * apart by direction rather than by reading a number.
  */
 import { EQ_FREQUENCIES } from '../../shared/types.ts'
 import { PARAMS, clamp, formatValue } from '../../shared/params.ts'
@@ -12,16 +15,14 @@ import { el, onDrag, svgEl } from '../core/dom.ts'
 
 const SPEC = PARAMS.eq.band
 const VIEW_W = 320
-const VIEW_H = 108
-const TRACK_HEIGHT = 62
-const CAP_HEIGHT = 11
+const VIEW_H = 84
 /**
- * Volts-per-pixel for the curve. Drawing the full +/-18dB range would make a
- * typical 4dB move a two-pixel wobble, so the curve is scaled to +/-12dB and
- * clamped — the sliders and the readout carry the exact value.
+ * Drawing the full ±18 dB range would make a typical 4 dB move a two-pixel
+ * wobble, so the curve is scaled to ±12 dB and clamped. The bands and the
+ * readout carry the exact value.
  */
 const CURVE_RANGE_DB = 12
-const CURVE_MARGIN = 9
+const CURVE_MARGIN = 8
 
 export interface EqHandle {
   el: HTMLElement
@@ -29,22 +30,13 @@ export interface EqHandle {
   destroy(): void
 }
 
-export interface EqOptions {
-  bands: number[]
-  focused: number
-  onInput: (bands: number[]) => void
-  onFocusBand: (index: number) => void
-}
-
 function hzLabel(hz: number): string {
   return hz >= 1000 ? `${hz / 1000}k` : String(hz)
 }
 
-/**
- * A Catmull-Rom spline through the band points, so the curve reads as a smooth
- * response rather than a polyline. Purely presentational — the actual filters
- * are peaking biquads.
- */
+/** A Catmull-Rom spline through the band points, so the curve reads as a
+ *  response rather than a polyline. Presentational only — the filters are
+ *  peaking biquads. */
 function curvePath(bands: number[]): string {
   const count = EQ_FREQUENCIES.length
   const step = VIEW_W / count
@@ -53,27 +45,30 @@ function curvePath(bands: number[]): string {
     x: step * (i + 0.5),
     y: VIEW_H / 2 - clamp(gain / CURVE_RANGE_DB, -1, 1) * half,
   }))
-  if (points.length === 0) return ''
+  const first = points[0]
+  const last = points[points.length - 1]
+  if (!first || !last) return ''
 
-  const first = points[0]!
-  const last = points[points.length - 1]!
   let path = `M 0 ${first.y.toFixed(2)} L ${first.x.toFixed(2)} ${first.y.toFixed(2)}`
   for (let i = 0; i < points.length - 1; i++) {
     const p0 = points[Math.max(0, i - 1)]!
     const p1 = points[i]!
     const p2 = points[i + 1]!
     const p3 = points[Math.min(points.length - 1, i + 2)]!
-    const c1x = p1.x + (p2.x - p0.x) / 6
-    const c1y = p1.y + (p2.y - p0.y) / 6
-    const c2x = p2.x - (p3.x - p1.x) / 6
-    const c2y = p2.y - (p3.y - p1.y) / 6
-    path += ` C ${c1x.toFixed(2)} ${c1y.toFixed(2)} ${c2x.toFixed(2)} ${c2y.toFixed(2)} ${p2.x.toFixed(2)} ${p2.y.toFixed(2)}`
+    path +=
+      ` C ${(p1.x + (p2.x - p0.x) / 6).toFixed(2)} ${(p1.y + (p2.y - p0.y) / 6).toFixed(2)}` +
+      ` ${(p2.x - (p3.x - p1.x) / 6).toFixed(2)} ${(p2.y - (p3.y - p1.y) / 6).toFixed(2)}` +
+      ` ${p2.x.toFixed(2)} ${p2.y.toFixed(2)}`
   }
-  path += ` L ${VIEW_W} ${last.y.toFixed(2)}`
-  return path
+  return `${path} L ${VIEW_W} ${last.y.toFixed(2)}`
 }
 
-export function createEq(options: EqOptions): EqHandle {
+export function createEq(options: {
+  bands: number[]
+  focused: number
+  onInput: (bands: number[]) => void
+  onFocusBand: (index: number) => void
+}): EqHandle {
   let bands = [...options.bands]
   let focused = options.focused
 
@@ -84,9 +79,7 @@ export function createEq(options: EqOptions): EqHandle {
     const y = VIEW_H / 2 - (db / CURVE_RANGE_DB) * (VIEW_H / 2 - CURVE_MARGIN)
     grid.append(svgEl('line', { class: 'ap-eq-grid', x1: 0, y1: y, x2: VIEW_W, y2: y }))
   }
-  grid.append(
-    svgEl('line', { class: 'ap-eq-zero', x1: 0, y1: VIEW_H / 2, x2: VIEW_W, y2: VIEW_H / 2 }),
-  )
+  grid.append(svgEl('line', { class: 'ap-eq-zero', x1: 0, y1: VIEW_H / 2, x2: VIEW_W, y2: VIEW_H / 2 }))
 
   const curve = svgEl(
     'svg',
@@ -99,15 +92,14 @@ export function createEq(options: EqOptions): EqHandle {
     [grid, fill, line],
   )
 
-  const caps: HTMLElement[] = []
+  const fills: HTMLElement[] = []
   const bandEls: HTMLElement[] = []
   const cleanups: Array<() => void> = []
-  const readout = el('div', { class: 'ap-readout', style: 'text-align:right;min-height:12px' })
   const bandRow = el('div', { class: 'ap-eq-bands' })
 
   EQ_FREQUENCIES.forEach((hz, index) => {
-    const cap = el('div', { class: 'ap-eq-band-cap' })
-    const track = el('div', { class: 'ap-eq-band-track' }, [cap])
+    const bandFill = el('div', { class: 'ap-eq-band-fill' })
+    const track = el('div', { class: 'ap-eq-band-track' }, [bandFill])
     const band = el(
       'div',
       {
@@ -123,9 +115,7 @@ export function createEq(options: EqOptions): EqHandle {
 
     function valueAt(clientY: number): number {
       const rect = track.getBoundingClientRect()
-      const usable = rect.height - CAP_HEIGHT
-      const local = clamp(clientY - rect.top - CAP_HEIGHT / 2, 0, usable)
-      const position = 1 - local / Math.max(1, usable)
+      const position = 1 - clamp((clientY - rect.top) / Math.max(1, rect.height), 0, 1)
       const raw = SPEC.min + position * (SPEC.max - SPEC.min)
       return clamp(Math.round(raw / SPEC.step) * SPEC.step, SPEC.min, SPEC.max)
     }
@@ -144,7 +134,7 @@ export function createEq(options: EqOptions): EqHandle {
           options.onFocusBand(index)
           commit(valueAt(event.clientY))
         },
-        onMove: (_delta, event) => commit(valueAt(event.clientY)),
+        onMove: (_d, event) => commit(valueAt(event.clientY)),
       }),
     )
 
@@ -174,10 +164,12 @@ export function createEq(options: EqOptions): EqHandle {
       band.removeEventListener('dblclick', onDoubleClick)
     })
 
-    caps.push(cap)
+    fills.push(bandFill)
     bandEls.push(band)
     bandRow.append(band)
   })
+
+  const readout = el('div', { class: 'ap-num', style: 'text-align:right;color:var(--ap-ink-3)' })
 
   function render(): void {
     const path = curvePath(bands)
@@ -185,25 +177,31 @@ export function createEq(options: EqOptions): EqHandle {
     fill.setAttribute('d', `${path} L ${VIEW_W} ${VIEW_H / 2} L 0 ${VIEW_H / 2} Z`)
 
     bands.forEach((gain, i) => {
-      const cap = caps[i]
+      const bandFill = fills[i]
       const band = bandEls[i]
-      if (!cap || !band) return
-      const position = (clamp(gain, SPEC.min, SPEC.max) - SPEC.min) / (SPEC.max - SPEC.min)
-      cap.style.top = `${(1 - position) * (TRACK_HEIGHT - CAP_HEIGHT)}px`
+      if (!bandFill || !band) return
+      // Fill outward from the centre line: up for boost, down for cut, on the
+      // same +/-12 dB scale as the curve so the two agree visually.
+      const magnitude = Math.min(1, Math.abs(gain) / CURVE_RANGE_DB)
+      if (gain >= 0) {
+        bandFill.style.top = `${50 - magnitude * 50}%`
+        bandFill.style.bottom = '50%'
+      } else {
+        bandFill.style.top = '50%'
+        bandFill.style.bottom = `${50 - magnitude * 50}%`
+      }
       band.setAttribute('data-focused', String(i === focused))
       band.setAttribute('aria-valuenow', String(gain))
       band.setAttribute('aria-valuetext', formatValue(gain, SPEC))
     })
 
-    const gain = bands[focused] ?? 0
-    readout.textContent = `${hzLabel(EQ_FREQUENCIES[focused] ?? 0)}Hz  ${formatValue(gain, SPEC)}`
+    readout.textContent = `${hzLabel(EQ_FREQUENCIES[focused] ?? 0)}Hz  ${formatValue(bands[focused] ?? 0, SPEC)}`
   }
 
-  const root = el('div', { class: 'ap-eq' }, [curve, bandRow, readout])
   render()
 
   return {
-    el: root,
+    el: el('div', { class: 'ap-eq' }, [curve, bandRow, readout]),
     set(nextBands, nextFocused) {
       bands = [...nextBands]
       focused = nextFocused

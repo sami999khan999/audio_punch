@@ -7,7 +7,7 @@
  */
 import { DEFAULT_KEYMAP } from '../../shared/defaults.ts'
 import { el } from '../core/dom.ts'
-import { createButton } from '../controls/toggle.ts'
+import { createPillEl } from '../controls/switch.ts'
 import { ACTION_CATALOG, acceleratorFromEvent, formatAccelerator } from '../../content/keymap.ts'
 import type { UiState, UiStore } from '../core/store.ts'
 
@@ -29,8 +29,8 @@ export function createKeymapEditor(store: UiStore): KeymapEditorHandle {
 
   const list = el('div', { class: 'ap-list' })
 
-  const browserCard = el('div', { class: 'ap-card' }, [
-    el('div', { class: 'ap-legend', style: 'margin-bottom:10px', text: 'Browser shortcuts' }),
+  const browserCard = el('div', { class: 'ap-glass ap-card' }, [
+    el('div', { class: 'ap-label', style: 'margin-bottom:10px', text: 'Browser shortcuts' }),
     ...BROWSER_SHORTCUTS.map(([label, keys]) =>
       el('div', { class: 'ap-help-row' }, [
         el('span', { text: label }),
@@ -38,7 +38,7 @@ export function createKeymapEditor(store: UiStore): KeymapEditorHandle {
       ]),
     ),
     el('div', {
-      class: 'ap-row-sub',
+      class: 'ap-listrow-sub',
       style: 'margin-top:12px;white-space:normal',
       text:
         'The browser allows an extension four shortcuts that work with nothing on screen. ' +
@@ -50,8 +50,8 @@ export function createKeymapEditor(store: UiStore): KeymapEditorHandle {
     browserCard,
     el('div', {}, [
       el('div', { style: 'display:flex;align-items:center;gap:10px;margin-bottom:8px' }, [
-        el('div', { class: 'ap-legend', style: 'flex:1', text: 'Mixer shortcuts' }),
-        createButton({
+        el('div', { class: 'ap-label', style: 'flex:1', text: 'Mixer shortcuts' }),
+        createPillEl({
           label: 'Restore defaults',
           onClick: () => {
             void store.send({ type: 'ui:set-keymap', keymap: structuredClone(DEFAULT_KEYMAP) })
@@ -91,7 +91,7 @@ export function createKeymapEditor(store: UiStore): KeymapEditorHandle {
       let group = groups.get(action.group)
       if (!group) {
         group = el('div', { style: 'margin-bottom:14px' }, [
-          el('div', { class: 'ap-legend', style: 'margin-bottom:6px', text: action.group }),
+          el('div', { class: 'ap-label', style: 'margin-bottom:6px', text: action.group }),
         ])
         groups.set(action.group, group)
         list.append(group)
@@ -102,7 +102,7 @@ export function createKeymapEditor(store: UiStore): KeymapEditorHandle {
       const clash = accelerator ? conflicts(accelerator, action.id) : []
 
       const keyButton = el('button', {
-        class: 'ap-btn',
+        class: 'ap-pill',
         type: 'button',
         style: 'min-width:120px;justify-content:center',
         'data-on': String(isCapturing),
@@ -131,12 +131,12 @@ export function createKeymapEditor(store: UiStore): KeymapEditorHandle {
       if (isCapturing) requestAnimationFrame(() => keyButton.focus())
 
       group.append(
-        el('div', { class: 'ap-row' }, [
-          el('div', { class: 'ap-row-main' }, [
-            el('div', { class: 'ap-row-title', text: action.label }),
+        el('div', { class: 'ap-listrow' }, [
+          el('div', { class: 'ap-listrow-main' }, [
+            el('div', { class: 'ap-listrow-title', text: action.label }),
             clash.length > 0
               ? el('div', {
-                  class: 'ap-row-sub',
+                  class: 'ap-listrow-sub',
                   style: 'color:var(--ap-hot)',
                   text: `Also bound to ${clash.join(', ')}`,
                 })

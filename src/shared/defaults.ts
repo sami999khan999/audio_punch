@@ -64,10 +64,12 @@ export const DEFAULT_CHAIN: ChainState = {
 }
 
 export const DEFAULT_UI = {
-  overlayHeight: 560,
-  accent: '#ffa72b',
+  overlayHeight: 0, // 0 means "fill the viewport"; the grip sets a real height
+  accent: '#7fd4c1',
   reduceMotion: false,
   meters: true,
+  backgroundDim: 0.45,
+  backgroundBlur: 0,
 }
 
 /**

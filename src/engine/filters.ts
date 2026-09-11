@@ -1,8 +1,8 @@
 /**
  * The DJ-style resonant high-pass / low-pass sweep.
  */
-import { PARAMS } from '../../shared/params.ts'
-import type { ChainState } from '../../shared/types.ts'
+import { PARAMS } from '../shared/params.ts'
+import type { ChainState } from '../shared/types.ts'
 import { ramp, type ChainModule } from './module.ts'
 
 export class FilterModule implements ChainModule {

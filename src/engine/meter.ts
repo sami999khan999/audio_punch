@@ -4,7 +4,7 @@
  * One analyser per tab, sampled from a single shared interval rather than a
  * per-tab rAF loop, and only while a UI surface is actually open.
  */
-import type { LevelReading } from '../../shared/types.ts'
+import type { LevelReading } from '../shared/types.ts'
 
 export const METER_FPS = 30
 

@@ -65,6 +65,14 @@ export function makeManifest(target: Target): Record<string, unknown> {
     ],
     commands: COMMANDS,
     host_permissions: ['<all_urls>'],
+    web_accessible_resources: [
+      {
+        // The page-side AudioContext loads these over the network stack, so
+        // they have to be reachable from the page's origin.
+        resources: ['worklets/*.js'],
+        matches: ['http://*/*', 'https://*/*'],
+      },
+    ],
   }
 
   if (target === 'firefox') {
@@ -72,7 +80,7 @@ export function makeManifest(target: Target): Record<string, unknown> {
     // adapter falls back to the media-element engine there.
     return {
       ...base,
-      permissions: ['storage', 'tabs', 'activeTab', 'scripting', 'downloads'],
+      permissions: ['storage', 'unlimitedStorage', 'tabs', 'scripting', 'downloads'],
       background: { scripts: ['background.js'], type: 'module' },
       browser_specific_settings: {
         gecko: { id: 'audio-punch@local', strict_min_version: '115.0' },
@@ -82,15 +90,7 @@ export function makeManifest(target: Target): Record<string, unknown> {
 
   return {
     ...base,
-    permissions: [
-      'tabCapture',
-      'offscreen',
-      'storage',
-      'tabs',
-      'activeTab',
-      'scripting',
-      'downloads',
-    ],
+    permissions: ['storage', 'unlimitedStorage', 'tabs', 'scripting', 'downloads'],
     background: { service_worker: 'background.js', type: 'module' },
     minimum_chrome_version: '116',
   }

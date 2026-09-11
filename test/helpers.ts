@@ -1,7 +1,7 @@
 /**
  * An in-memory Platform, so the settings store can be tested without a browser.
  */
-import type { CaptureHandle, Platform, PlatformTab } from '../src/platform/index.ts'
+import type { Platform, PlatformTab } from '../src/platform/index.ts'
 
 export function fakePlatform(seed: Record<string, unknown> = {}): Platform & {
   written: Record<string, unknown>
@@ -9,7 +9,6 @@ export function fakePlatform(seed: Record<string, unknown> = {}): Platform & {
   const written: Record<string, unknown> = { ...seed }
   return {
     name: 'chrome',
-    canCaptureTabs: true,
     written,
     storage: {
       async read<T>(key: string): Promise<T | null> {
@@ -34,10 +33,6 @@ export function fakePlatform(seed: Record<string, unknown> = {}): Platform & {
         return null
       },
     },
-    async captureTab(): Promise<CaptureHandle> {
-      throw new Error('not captured in tests')
-    },
-    async ensureEngine() {},
     async openDashboard() {},
     notify() {},
   }

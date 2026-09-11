@@ -9,9 +9,9 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { FFT, hannWindow } from '../src/offscreen/worklets/fft.ts'
-import { PhaseVocoder } from '../src/offscreen/worklets/pitch-core.ts'
-import { NoiseGate, dbToGain } from '../src/offscreen/worklets/gate-core.ts'
+import { FFT, hannWindow } from '../src/engine/worklets/fft.ts'
+import { PhaseVocoder } from '../src/engine/worklets/pitch-core.ts'
+import { NoiseGate, dbToGain } from '../src/engine/worklets/gate-core.ts'
 
 const SR = 48000
 

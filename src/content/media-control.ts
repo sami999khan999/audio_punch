@@ -1,74 +1,97 @@
 /**
- * Playback speed, and telling the service worker whether this page has any
- * media elements at all.
+ * Finds the page's media elements, routes them through the engine, and applies
+ * playback speed.
  *
- * Speed is the one control the audio graph cannot deliver: under tab capture
- * the engine receives an already-rendered stream, so changing the rate has to
- * happen on the page's own <audio>/<video> elements. That also means speed is
- * unavailable on sites that generate audio entirely through Web Audio, which
- * is why the rack disables the control when this module reports no elements.
+ * Speed is the one control the audio graph cannot deliver: it belongs to the
+ * media element, not the signal path. Everything else this module does is
+ * about noticing elements — sites add players lazily, swap them on navigation,
+ * and bury them in shadow roots.
  */
-
-type MediaElement = HTMLMediaElement
+import type { ContentEngine } from './engine.ts'
 
 export interface MediaController {
   setRate(rate: number): void
-  hasMedia(): boolean
   count(): number
+  hasMedia(): boolean
+  /** Find and hook media elements. Call once after construction, then any time
+   *  the page may have gained a player. */
+  scan(): void
   destroy(): void
 }
 
-export function createMediaController(onChange: (hasMedia: boolean, count: number) => void): MediaController {
-  let rate = 1
-  let lastReport = ''
+/**
+ * Collects media elements including those inside open shadow roots — plenty of
+ * sites wrap their player in a custom element.
+ */
+function collect(root: ParentNode, found: HTMLMediaElement[] = []): HTMLMediaElement[] {
+  for (const el of root.querySelectorAll<HTMLElement>('audio, video, *')) {
+    if (el instanceof HTMLMediaElement) {
+      found.push(el)
+    } else if (el.shadowRoot) {
+      collect(el.shadowRoot, found)
+    }
+  }
+  return found
+}
 
-  function elements(): MediaElement[] {
-    return Array.from(document.querySelectorAll<MediaElement>('audio, video'))
+export function createMediaController(
+  engine: ContentEngine,
+  onChange: (hasMedia: boolean, count: number) => void,
+): MediaController {
+  let rate = 1
+  let lastSignature = ''
+
+  function elements(): HTMLMediaElement[] {
+    return collect(document)
   }
 
-  function applyRate(): void {
-    for (const element of elements()) {
-      // Assigning an identical rate still fires ratechange on some sites and
-      // can fight their own player logic, so only write real changes.
+  function applyRate(list = elements()): void {
+    for (const element of list) {
+      // Writing an identical rate still fires ratechange on some sites and can
+      // fight their own player logic, so only write real changes.
       if (element.playbackRate !== rate) element.playbackRate = rate
     }
   }
 
-  function report(): void {
+  function scan(): void {
     const found = elements()
-    const signature = `${found.length > 0}:${found.length}`
-    if (signature === lastReport) return
-    lastReport = signature
-    onChange(found.length > 0, found.length)
+    for (const element of found) void engine.hook(element)
+    if (rate !== 1) applyRate(found)
+
+    const signature = `${found.length}`
+    if (signature !== lastSignature) {
+      lastSignature = signature
+      onChange(found.length > 0, found.length)
+    }
   }
 
-  // Sites add players lazily and swap them on navigation, so watch the tree
-  // rather than probing once at startup.
-  const observer = new MutationObserver(() => {
-    report()
-    if (rate !== 1) applyRate()
-  })
+  const observer = new MutationObserver(() => scan())
   observer.observe(document.documentElement, { childList: true, subtree: true })
 
-  // Players routinely reset playbackRate when a new source loads.
+  // Players routinely reset playbackRate when a new source loads, and an
+  // element can start playing without ever being added to the DOM anew.
   const onPlay = (event: Event) => {
     const target = event.target
-    if (rate !== 1 && target instanceof HTMLMediaElement && target.playbackRate !== rate) {
-      target.playbackRate = rate
-    }
+    if (!(target instanceof HTMLMediaElement)) return
+    void engine.hook(target)
+    if (rate !== 1 && target.playbackRate !== rate) target.playbackRate = rate
   }
   document.addEventListener('play', onPlay, true)
   document.addEventListener('loadeddata', onPlay, true)
 
-  report()
+  // Deliberately no initial scan here. Scanning calls back into `onChange`,
+  // and the caller's own `const media = createMediaController(...)` has not
+  // been assigned yet at this point — the callback would read it in its
+  // temporal dead zone. The caller runs the first scan once it is wired up.
 
   return {
     setRate(next) {
       rate = next
       applyRate()
     },
-    hasMedia: () => elements().length > 0,
     count: () => elements().length,
+    hasMedia: () => elements().length > 0,
+    scan,
     destroy() {
       observer.disconnect()
       document.removeEventListener('play', onPlay, true)

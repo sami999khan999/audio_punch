@@ -192,12 +192,31 @@ export interface GlobalState {
 }
 
 export interface UiPrefs {
-  /** Overlay height in CSS pixels. */
+  /** Mixer panel height in CSS pixels, set by the resize grip. */
   overlayHeight: number
   accent: string
   reduceMotion: boolean
-  /** Whether level meters are drawn (they cost a little CPU per armed tab). */
+  /** Whether level meters are drawn (they cost a little CPU per page). */
   meters: boolean
+  /** How far the background is darkened, 0..1, so controls stay legible. */
+  backgroundDim: number
+  /** Background blur radius in pixels. */
+  backgroundBlur: number
+}
+
+/**
+ * The user's chosen backdrop.
+ *
+ * Stored under its own storage key, never inside `Settings`: a video can run to
+ * megabytes, and Settings is broadcast to every open surface on each knob
+ * movement.
+ */
+export interface Background {
+  kind: 'none' | 'image' | 'video'
+  /** Data URL of the chosen file. Empty when kind is 'none'. */
+  dataUrl: string
+  name: string
+  updatedAt: number
 }
 
 export const SCHEMA_VERSION = 1
@@ -226,9 +245,6 @@ export function targetOrigin(target: TargetKey): string | null {
   return target === 'global' ? null : target.slice('site:'.length)
 }
 
-/** Why a tab cannot currently be processed, if it cannot. */
-export type TabBlockReason = 'unsupported-page' | 'drm' | 'capture-failed' | null
-
 export interface TabInfo {
   tabId: number
   windowId: number
@@ -236,14 +252,18 @@ export interface TabInfo {
   title: string
   favIconUrl: string
   audible: boolean
-  /** Capture is live and this tab's audio is flowing through the engine. */
-  armed: boolean
-  /** True while an arm request is in flight. */
-  arming: boolean
-  blocked: TabBlockReason
+  active: boolean
   /** Set when the content script reports <audio>/<video> elements present. */
   hasMediaElements: boolean
-  active: boolean
+  /** How many of those elements are routed through the engine. */
+  hooked: number
+  /**
+   * Routed and playing, but no signal is reaching the graph. Cross-origin
+   * media served without CORS headers does this: nothing throws, the page just
+   * goes quiet. Surfaced so it reads as a known limitation, not a broken
+   * extension.
+   */
+  silent: boolean
 }
 
 export interface LevelReading {

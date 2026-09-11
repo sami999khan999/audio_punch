@@ -5,7 +5,7 @@
  * it keeps the extension a few hundred kilobytes smaller, and it lets size,
  * decay and damping be real controls instead of a fixed list of rooms.
  */
-import type { ChainState } from '../../shared/types.ts'
+import type { ChainState } from '../shared/types.ts'
 import { ramp, type ChainModule } from './module.ts'
 
 /** Regenerating an impulse is expensive, so only do it on a real change. */

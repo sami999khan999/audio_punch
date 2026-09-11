@@ -79,17 +79,17 @@ try {
   await dash.goto(`chrome-extension://${extensionId}/dashboard.html`)
   await dash.waitForSelector('.ap-page', { timeout: 10000 })
 
-  check('the dashboard renders', (await dash.locator('.ap-tab').count()) === 4)
+  check('the dashboard renders', (await dash.locator('.ap-panes .ap-tab').count()) === 4)
   check('the dashboard throws nothing', dashErrors.length === 0, dashErrors.join('; '))
 
   // Its status line only leaves "Reconnecting…" once the worker answers.
   await dash
     .waitForFunction(
-      () => !document.querySelector('.ap-page-head .ap-legend')?.textContent?.includes('Reconnect'),
+      () => !document.querySelector('.ap-page-head .ap-label')?.textContent?.includes('Reconnect'),
       { timeout: 10000 },
     )
     .catch(() => {})
-  const status = (await dash.locator('.ap-page-head .ap-legend').last().textContent())?.trim()
+  const status = (await dash.locator('.ap-page-head .ap-label').last().textContent())?.trim()
   check('the dashboard connects to the worker', status !== 'Reconnecting…', status ?? '(none)')
 
   const stored = await dash.evaluate(async () => {
@@ -113,6 +113,12 @@ try {
   })
   check('the content script responds', probe?.ok === true, probe?.error ?? '')
   check('it finds the page media element', probe?.hasMedia === true, `${probe?.count ?? 0} found`)
+  check(
+    'the element is routed through the engine',
+    probe?.hooked >= 1,
+    `${probe?.hooked ?? 0} hooked`,
+  )
+  check('the page received its resolved chain', probe?.chain === true)
 
   if (probe.tabId !== undefined) {
     await dash.evaluate(async (tabId) => {
@@ -126,12 +132,12 @@ try {
     return {
       present: Boolean(host),
       closedShadow: host ? host.shadowRoot === null : false,
-      pinnedTop: host ? getComputedStyle(host).position === 'fixed' : false,
+      visible: host ? getComputedStyle(host).display !== 'none' : false,
     }
   })
   check('the overlay mounts into the page', overlay.present)
   check('its shadow root is closed to the page', overlay.closedShadow)
-  check('it is pinned to the viewport', overlay.pinnedTop)
+  check('it is visible once opened', overlay.visible)
   check('the overlay throws nothing on the page', pageErrors.length === 0, pageErrors.join('; '))
 
   // Changing a setting must survive the round trip to storage.
@@ -147,11 +153,31 @@ try {
   })
   check('a chain change reaches storage', roundTrip === 2.5, `level ${roundTrip}`)
 
+  // The engine now runs in the page, so there should be no offscreen document
+  // and no tab-capture permission left behind.
   const engineDocs = await dash.evaluate(async () => {
     const contexts = await chrome.runtime.getContexts({ contextTypes: ['OFFSCREEN_DOCUMENT'] })
     return contexts.length
   })
-  check('the audio engine document is created', engineDocs === 1, `${engineDocs} offscreen`)
+  check('no offscreen document is created', engineDocs === 0, `${engineDocs} offscreen`)
+
+  const permissions = await dash.evaluate(() => chrome.runtime.getManifest().permissions ?? [])
+  check(
+    'tabCapture is no longer requested',
+    !permissions.includes('tabCapture') && !permissions.includes('offscreen'),
+    permissions.join(', '),
+  )
+
+  const worklets = await dash.evaluate(async () => {
+    const results = await Promise.all(
+      ['worklets/pitch-shifter.js', 'worklets/gate.js'].map(async (p) => {
+        const res = await fetch(chrome.runtime.getURL(p))
+        return res.ok
+      }),
+    )
+    return results.every(Boolean)
+  })
+  check('the audio worklets are reachable', worklets)
 } finally {
   await context?.close()
   await new Promise((resolve) => server.close(resolve))

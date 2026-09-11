@@ -1,7 +1,7 @@
 /**
  * Compressor, brick-wall limiter and noise gate.
  */
-import type { ChainState } from '../../shared/types.ts'
+import type { ChainState } from '../shared/types.ts'
 import { dbToGain, ramp, type ChainModule } from './module.ts'
 
 export class CompModule implements ChainModule {

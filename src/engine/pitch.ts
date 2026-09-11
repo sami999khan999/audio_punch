@@ -1,7 +1,7 @@
 /**
  * Pitch shift, backed by the phase-vocoder worklet.
  */
-import type { ChainState } from '../../shared/types.ts'
+import type { ChainState } from '../shared/types.ts'
 import { ramp, type ChainModule } from './module.ts'
 
 export class PitchModule implements ChainModule {

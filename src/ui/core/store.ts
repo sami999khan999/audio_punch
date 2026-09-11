@@ -9,7 +9,13 @@
  */
 import { PORT_UI, type Broadcast, type UiRequest, type UiResponse } from '../../shared/messages.ts'
 import { defaultSettings } from '../../shared/defaults.ts'
-import type { LevelReading, StateSnapshot, TargetKey, TabInfo } from '../../shared/types.ts'
+import type {
+  Background,
+  LevelReading,
+  StateSnapshot,
+  TabInfo,
+  TargetKey,
+} from '../../shared/types.ts'
 
 export interface Toast {
   id: number
@@ -19,6 +25,8 @@ export interface Toast {
 
 export interface UiState {
   snapshot: StateSnapshot
+  /** Kept out of the snapshot: it can be megabytes and changes rarely. */
+  background: Background
   /** Which strip the rack is editing. */
   target: TargetKey
   /** The tab backing the selected strip, when it is a tab strip. */
@@ -43,6 +51,7 @@ type Listener = (state: UiState) => void
 export class UiStore {
   private state: UiState = {
     snapshot: EMPTY_SNAPSHOT,
+    background: { kind: 'none', dataUrl: '', name: '', updatedAt: 0 },
     target: 'global',
     targetTabId: null,
     levels: {},
@@ -107,6 +116,9 @@ export class UiStore {
       }
       case 'meters':
         this.set({ levels: message.levels })
+        break
+      case 'background':
+        this.set({ background: message.background })
         break
       case 'toast':
         this.pushToast(message.kind, message.text)

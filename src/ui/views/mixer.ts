@@ -1,18 +1,20 @@
 /**
- * The mixing desk: top rail, channel rail and module rack, wired to the store.
+ * The mixing desk: top bar, master rail, source cards, module rack, side column.
  *
  * Shared verbatim by the overlay and the dashboard. It also exposes the action
- * surface the keyboard map drives, so a shortcut and a click go through
- * exactly the same code path — there is no second implementation to drift.
+ * surface the keyboard map drives, so a shortcut and a click go through exactly
+ * the same code path — there is no second implementation to drift.
  */
 import { clamp, PARAMS } from '../../shared/params.ts'
-import { engagedModules } from '../../shared/defaults.ts'
 import { EQ_FREQUENCIES, type ChainState, type ModuleId, type TargetKey } from '../../shared/types.ts'
+import { prettyOrigin } from '../../shared/origin.ts'
 import { el } from '../core/dom.ts'
 import type { UiState, UiStore } from '../core/store.ts'
-import { createHeader } from './header.ts'
-import { createChannelRail } from './strip.ts'
+import { createTopBar } from './topbar.ts'
+import { createSources } from './sources.ts'
+import { createSide } from './side.ts'
 import { createRack, type RackHandle } from './rack.ts'
+import { createVSlider } from '../controls/slider.ts'
 
 const EQ_SPEC = PARAMS.eq.band
 
@@ -40,7 +42,6 @@ export interface MixerHandle {
   el: HTMLElement
   update(state: UiState): void
   actions: MixerActions
-  /** The chain the rack is currently editing. */
   chain(): ChainState
 }
 
@@ -52,7 +53,6 @@ export interface MixerOptions {
   onClose: () => void
 }
 
-/** The chain a target is editing, straight from the last snapshot. */
 function chainFor(state: UiState, target: TargetKey): ChainState {
   const { settings } = state.snapshot
   if (target === 'global') return settings.global.chain
@@ -64,70 +64,71 @@ export function createMixer(options: MixerOptions): MixerHandle {
   let state = store.get()
   let rack: RackHandle | null = null
   let rackTarget: TargetKey | null = null
+  let group = 'Core'
 
-  const deskInner = el('div', { class: 'ap-desk' })
+  const currentChain = () => chainFor(state, state.target)
 
-  function currentChain(): ChainState {
-    return chainFor(state, state.target)
+  function patch(value: Partial<ChainState>): void {
+    // Pushed rather than sent: slider drags produce a stream of these and none
+    // of them needs a reply.
+    store.push({ type: 'ui:patch-chain', target: state.target, patch: value })
   }
 
-  function patch(patchValue: Partial<ChainState>): void {
-    // Pushed rather than sent: knob drags produce a stream of these and none of
-    // them needs a reply.
-    store.push({ type: 'ui:patch-chain', target: state.target, patch: patchValue })
+  function patchTarget(target: TargetKey, value: Partial<ChainState>): void {
+    store.push({ type: 'ui:patch-chain', target, patch: value })
   }
 
-  const header = createHeader({
+  // ── master rail ────────────────────────────────────────────────────────
+  const master = createVSlider({
+    spec: PARAMS.gain.level,
+    value: currentChain().gain.level,
+    label: 'Level for the selected source',
+    onInput: (level) => patch({ gain: { level, mute: currentChain().gain.mute } }),
+  })
+  const masterValue = el('div', { class: 'ap-num', style: 'color:var(--ap-ink-3)' })
+  const rail = el('div', { class: 'ap-rail' }, [
+    el('div', { class: 'ap-label', style: 'writing-mode:vertical-rl;transform:rotate(180deg)', text: 'Level' }),
+    master.el,
+    masterValue,
+  ])
+
+  // ── hero ───────────────────────────────────────────────────────────────
+  const heroTitle = el('div', { class: 'ap-display' })
+  const heroMeta = el('div', { class: 'ap-hero-meta' })
+  const hero = el('div', { class: 'ap-hero' }, [heroTitle, heroMeta])
+
+  // ── sources + rack ─────────────────────────────────────────────────────
+  const sources = createSources({
+    onSelect: (target, tabId) => store.selectTarget(target, tabId),
+    onLevel: (target, level) => {
+      const chain = chainFor(state, target)
+      patchTarget(target, { gain: { level, mute: chain.gain.mute } })
+    },
+    onToggleGlobal: (on) => void store.send({ type: 'ui:set-global-on', on }),
+  })
+
+  const rackHost = el('div', { class: 'ap-col', style: 'flex:1 1 auto;min-height:0' })
+  const main = el('div', { class: 'ap-col ap-col-main' }, [
+    hero,
+    el('div', { style: 'flex:0 1 auto;max-height:44%;display:flex;min-height:110px' }, [sources.el]),
+    rackHost,
+  ])
+
+  const side = createSide(store, () => state.target)
+
+  const topBar = createTopBar({
     showClose: options.showClose,
     showWordmark: options.showWordmark,
-    onApplyTemplate: (templateId) => {
-      void store.send({ type: 'ui:apply-template', templateId, target: state.target })
-    },
-    onRemoveTemplate: () => {
-      void store.send({ type: 'ui:remove-template', target: state.target })
-    },
-    onSaveTemplate: (name) => {
-      void store.send({
-        type: 'ui:save-template',
-        name,
-        description: '',
-        modules: engagedModules(currentChain()),
-        source: state.target,
-      })
-    },
     onBypassAll: (value) => void store.send({ type: 'ui:bypass-all', value }),
     onMuteAll: (value) => void store.send({ type: 'ui:mute-all', value }),
-    onReset: () => void store.send({ type: 'ui:reset-chain', target: state.target }),
     onHelp: options.onHelp,
     onDashboard: () => void store.send({ type: 'ui:open-dashboard' }),
     onClose: options.onClose,
   })
 
-  const rail = createChannelRail({
-    onSelect: (target, tabId) => store.selectTarget(target, tabId),
-    onToggleGlobal: (on) => void store.send({ type: 'ui:set-global-on', on }),
-    onArm: (tab) => void store.send({ type: 'ui:arm', tabId: tab.tabId, confirmDrm: tab.blocked === 'drm' }),
-    onRelease: (tab) => void store.send({ type: 'ui:release', tabId: tab.tabId }),
-  })
+  const body = el('div', { class: 'ap-body' }, [rail, main, side.el])
+  const root = el('div', { style: 'display:contents' }, [topBar.el, body])
 
-  const body = el('div', { class: 'ap-body' }, [rail.el, deskInner])
-  const root = el('div', { style: 'display:contents' }, [header.el, body])
-
-  function rebuildRack(): void {
-    rack?.destroy()
-    const chain = currentChain()
-    rack = createRack({
-      chain,
-      eqBand: state.eqBand,
-      disabled: disabledModules(),
-      onPatch: patch,
-      onFocusBand: (index) => store.set({ eqBand: index }),
-    })
-    rackTarget = state.target
-    deskInner.replaceChildren(rack.el)
-  }
-
-  /** Modules that cannot act on the selected strip, with the reason to show. */
   function disabledModules(): Partial<Record<ModuleId, string>> {
     const tab = store.selectedTab()
     if (!tab) return {}
@@ -138,9 +139,26 @@ export function createMixer(options: MixerOptions): MixerHandle {
     return out
   }
 
-  // ------------------------------------------------------------ keyboard
+  function rebuildRack(): void {
+    rack?.destroy()
+    rack = createRack({
+      chain: currentChain(),
+      eqBand: state.eqBand,
+      group,
+      disabled: disabledModules(),
+      onPatch: patch,
+      onFocusBand: (index) => store.set({ eqBand: index }),
+      onGroupChange: (title) => {
+        group = title
+      },
+    })
+    rackTarget = state.target
+    rackHost.replaceChildren(rack.el)
+  }
 
-  function selectableTargets(): Array<{ target: TargetKey; tabId: number | null }> {
+  // ── keyboard actions ───────────────────────────────────────────────────
+
+  function selectable(): Array<{ target: TargetKey; tabId: number | null }> {
     return [
       { target: 'global' as TargetKey, tabId: null },
       ...state.snapshot.tabs.map((tab) => ({
@@ -150,16 +168,9 @@ export function createMixer(options: MixerOptions): MixerHandle {
     ]
   }
 
-  function toggleModuleFlag(id: ModuleId): void {
-    const chain = currentChain()
-    const module = chain[id] as { on?: boolean }
-    if (typeof module.on !== 'boolean') return
-    patch({ [id]: { on: !module.on } } as Partial<ChainState>)
-  }
-
   const actions: MixerActions = {
     selectRelative(offset) {
-      const list = selectableTargets()
+      const list = selectable()
       const index = list.findIndex(
         (entry) => entry.target === state.target && entry.tabId === state.targetTabId,
       )
@@ -168,29 +179,31 @@ export function createMixer(options: MixerOptions): MixerHandle {
     },
     selectGlobal: () => store.selectTarget('global', null),
     patch,
-    toggleModule: toggleModuleFlag,
+    toggleModule(id) {
+      const module = currentChain()[id] as { on?: boolean }
+      if (typeof module.on !== 'boolean') return
+      patch({ [id]: { on: !module.on } } as Partial<ChainState>)
+    },
     toggleBypass: () => patch({ bypass: !currentChain().bypass }),
     nudgeGain(steps) {
       const spec = PARAMS.gain.level
       const chain = currentChain()
-      const next = clamp(
-        Number((chain.gain.level + steps * 0.05).toFixed(3)),
-        spec.min,
-        spec.max,
-      )
-      patch({ gain: { level: next, mute: chain.gain.mute } })
+      patch({
+        gain: {
+          level: clamp(Number((chain.gain.level + steps * 0.05).toFixed(3)), spec.min, spec.max),
+          mute: chain.gain.mute,
+        },
+      })
     },
     toggleMute() {
       const chain = currentChain()
       patch({ gain: { level: chain.gain.level, mute: !chain.gain.mute } })
     },
     moveEqBand(offset) {
-      const next = (state.eqBand + offset + EQ_FREQUENCIES.length) % EQ_FREQUENCIES.length
-      store.set({ eqBand: next })
+      store.set({ eqBand: (state.eqBand + offset + EQ_FREQUENCIES.length) % EQ_FREQUENCIES.length })
     },
     nudgeEqBand(deltaDb) {
-      const chain = currentChain()
-      const bands = chain.eq.bands.map((gain, i) =>
+      const bands = currentChain().eq.bands.map((gain, i) =>
         i === state.eqBand ? clamp(gain + deltaDb, EQ_SPEC.min, EQ_SPEC.max) : gain,
       )
       patch({ eq: { on: true, bands } })
@@ -208,11 +221,10 @@ export function createMixer(options: MixerOptions): MixerHandle {
     toggleGlobal() {
       void store.send({ type: 'ui:set-global-on', on: !state.snapshot.settings.global.on })
     },
+    /** Kept for the keymap's sake: with element hooking there is nothing to
+     *  arm, so the nearest equivalent is pinning the site off global. */
     armSelected() {
-      const tab = store.selectedTab()
-      if (!tab) return
-      if (tab.armed) void store.send({ type: 'ui:release', tabId: tab.tabId })
-      else void store.send({ type: 'ui:arm', tabId: tab.tabId, confirmDrm: tab.blocked === 'drm' })
+      actions.toggleIgnoreGlobal()
     },
     applyTemplateSlot(index) {
       const template = state.snapshot.settings.templates[index]
@@ -226,6 +238,43 @@ export function createMixer(options: MixerOptions): MixerHandle {
     openDashboard: () => void store.send({ type: 'ui:open-dashboard' }),
   }
 
+  function renderHero(): void {
+    const { settings } = state.snapshot
+    const tab = store.selectedTab()
+    const isGlobal = state.target === 'global'
+    heroTitle.textContent = isGlobal
+      ? 'Global'
+      : prettyOrigin(state.target.slice('site:'.length))
+
+    const chain = currentChain()
+    const engaged = Object.values(chain).filter(
+      (module) => typeof module === 'object' && module !== null && (module as { on?: boolean }).on === true,
+    ).length
+
+    const chips: Node[] = []
+    if (isGlobal) {
+      chips.push(
+        el('span', {
+          class: 'ap-chip',
+          'data-tone': settings.global.on ? 'accent' : 'plain',
+          text: settings.global.on ? 'Driving every tab' : 'Off',
+        }),
+      )
+    } else if (tab) {
+      const pinned = settings.sites[tab.origin]?.ignoreGlobal === true
+      if (settings.global.on && !pinned) {
+        chips.push(el('span', { class: 'ap-chip', 'data-tone': 'accent', text: 'Following global' }))
+      }
+      if (pinned) chips.push(el('span', { class: 'ap-chip', text: 'Pinned off global' }))
+      if (tab.silent) {
+        chips.push(el('span', { class: 'ap-chip', 'data-tone': 'hot', text: 'No signal reaching the engine' }))
+      }
+    }
+    chips.push(el('span', { class: 'ap-chip', text: engaged === 0 ? 'Flat' : `${engaged} engaged` }))
+    if (chain.bypass) chips.push(el('span', { class: 'ap-chip', 'data-tone': 'hot', text: 'Bypassed' }))
+    heroMeta.replaceChildren(...chips)
+  }
+
   return {
     el: root,
     actions,
@@ -233,11 +282,19 @@ export function createMixer(options: MixerOptions): MixerHandle {
     update(next) {
       state = next
       const chain = currentChain()
-      header.update(state, chain)
-      rail.update(state)
-      if (rackTarget !== state.target) rebuildRack()
+
+      topBar.update(state)
+      sources.update(state)
+      side.update(state)
+      renderHero()
+
+      master.set(chain.gain.level)
+      masterValue.textContent = `${Math.round(chain.gain.level * 100)}%`
       const tabId = state.targetTabId
-      rack?.update(chain, tabId === null ? undefined : state.levels[tabId], state.eqBand)
+      master.setLevel(tabId === null ? 0 : (state.levels[tabId]?.peak ?? 0))
+
+      if (rackTarget !== state.target) rebuildRack()
+      rack?.update(chain, state.eqBand)
     },
   }
 }

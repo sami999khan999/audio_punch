@@ -1,39 +1,42 @@
 /**
- * The module rack: everything you can do to the selected strip.
+ * The module rack: everything you can do to the selected source.
  *
- * Built once per target and then updated in place. Rebuilding the DOM on every
- * state broadcast would tear a knob out from under the pointer mid-drag, so
- * `update` only pushes values into existing controls; the mixer recreates the
- * rack when the selected strip changes.
+ * Modules are grouped, and only the selected group is rendered — a wall of
+ * forty sliders is not something anyone reads. Each group is one row of cards.
+ *
+ * Built once per target and updated in place. Rebuilding on every state
+ * broadcast would tear a slider out from under the pointer mid-drag; the mixer
+ * recreates the rack only when the selected source changes.
  */
 import { MODULE_GROUPS, MODULE_LABELS, PARAMS, type ParamSpec } from '../../shared/params.ts'
 import type { ChainState, ModuleId } from '../../shared/types.ts'
 import { el } from '../core/dom.ts'
-import { createKnob, type KnobHandle } from '../controls/knob.ts'
-import { createFader, type FaderHandle } from '../controls/fader.ts'
-import { createToggle, type ToggleHandle } from '../controls/toggle.ts'
-import { createMeter, type MeterHandle } from '../controls/meter.ts'
+import { createSlider, type SliderHandle } from '../controls/slider.ts'
+import { createSwitch, type SwitchHandle } from '../controls/switch.ts'
 import { createEq, type EqHandle } from '../controls/eq.ts'
-import type { LevelReading } from '../../shared/types.ts'
 
 export type PatchFn = (patch: Partial<ChainState>) => void
 
 export interface RackHandle {
   el: HTMLElement
-  update(chain: ChainState, level: LevelReading | undefined, eqBand: number): void
+  update(chain: ChainState, eqBand: number): void
+  /** Which module group is on screen. */
+  setGroup(title: string): void
+  group(): string
   destroy(): void
 }
 
 export interface RackOptions {
   chain: ChainState
   eqBand: number
-  /** Modules the current platform or capture mode cannot deliver. */
+  group: string
+  /** Modules the page cannot deliver, with the reason to show. */
   disabled?: Partial<Record<ModuleId, string>>
   onPatch: PatchFn
   onFocusBand: (index: number) => void
+  onGroupChange: (title: string) => void
 }
 
-/** Narrow accessor for the flat module/parameter addressing the rack uses. */
 function readParam(chain: ChainState, module: ModuleId, key: string): number {
   return (chain[module] as unknown as Record<string, number>)[key] ?? 0
 }
@@ -45,230 +48,225 @@ function paramSpec(module: ModuleId, key: string): ParamSpec {
   return spec
 }
 
+/** Which parameters each module shows, in order. */
+const MODULE_PARAMS: Partial<Record<ModuleId, Array<[string, string]>>> = {
+  gain: [['level', 'Volume']],
+  pan: [['value', 'Balance']],
+  tone: [
+    ['bass', 'Bass'],
+    ['treble', 'Treble'],
+  ],
+  filter: [
+    ['highpass', 'High-pass'],
+    ['lowpass', 'Low-pass'],
+    ['resonance', 'Resonance'],
+  ],
+  comp: [
+    ['threshold', 'Threshold'],
+    ['ratio', 'Ratio'],
+    ['attack', 'Attack'],
+    ['release', 'Release'],
+    ['knee', 'Knee'],
+    ['makeup', 'Make-up'],
+  ],
+  limiter: [
+    ['ceiling', 'Ceiling'],
+    ['release', 'Release'],
+  ],
+  gate: [
+    ['threshold', 'Threshold'],
+    ['attack', 'Attack'],
+    ['release', 'Release'],
+    ['floor', 'Floor'],
+  ],
+  reverb: [
+    ['mix', 'Mix'],
+    ['size', 'Size'],
+    ['decay', 'Decay'],
+    ['damping', 'Damping'],
+  ],
+  delay: [
+    ['mix', 'Mix'],
+    ['time', 'Time'],
+    ['feedback', 'Feedback'],
+  ],
+  width: [['amount', 'Width']],
+  pitch: [['semitones', 'Pitch']],
+  speed: [['rate', 'Rate']],
+}
+
+/** Extra boolean switches a module offers beyond its on/off. */
+const MODULE_FLAGS: Partial<Record<ModuleId, Array<[string, string]>>> = {
+  gain: [['mute', 'Mute']],
+  delay: [['pingPong', 'Ping-pong']],
+  width: [['mono', 'Mono']],
+}
+
 export function createRack(options: RackOptions): RackHandle {
-  const knobs = new Map<string, { handle: KnobHandle; module: ModuleId; key: string }>()
-  const toggles = new Map<string, { handle: ToggleHandle; read: (chain: ChainState) => boolean }>()
+  const sliders = new Map<string, { handle: SliderHandle; module: ModuleId; key: string }>()
+  const switches = new Map<string, { handle: SwitchHandle; read: (c: ChainState) => boolean }>()
   const panels = new Map<ModuleId, HTMLElement>()
   const cleanups: Array<() => void> = []
 
   let chain = options.chain
+  let group = options.group
+  let eq: EqHandle | null = null
   const patch = options.onPatch
 
-  // ------------------------------------------------------------- factories
+  const tabs = el('div', { class: 'ap-tabs', role: 'tablist' })
+  const modules = el('div', { class: 'ap-modules ap-scroll' })
+  const root = el('div', { class: 'ap-col', style: 'flex:1 1 auto;min-height:0' }, [tabs, modules])
 
-  function knob(module: ModuleId, key: string, label?: string): HTMLElement {
+  function slider(module: ModuleId, key: string, label: string): HTMLElement {
     const spec = paramSpec(module, key)
-    const handle = createKnob({
+    const handle = createSlider({
       spec,
       value: readParam(chain, module, key),
-      label: label ?? spec.label,
+      label,
       onInput: (value) => patch({ [module]: { [key]: value } } as Partial<ChainState>),
     })
-    knobs.set(`${module}.${key}`, { handle, module, key })
+    sliders.set(`${module}.${key}`, { handle, module, key })
     cleanups.push(() => handle.destroy())
     return handle.el
   }
 
-  function powerToggle(module: ModuleId): ToggleHandle {
-    const handle = createToggle({
-      label: 'On',
-      on: (chain[module] as { on?: boolean }).on === true,
-      title: `Engage ${MODULE_LABELS[module]}`,
-      onChange: (on) => patch({ [module]: { on } } as Partial<ChainState>),
-    })
-    toggles.set(`${module}.on`, {
-      handle,
-      read: (c) => (c[module] as { on?: boolean }).on === true,
-    })
-    return handle
-  }
-
-  function flagToggle(
-    module: ModuleId,
-    key: string,
-    label: string,
-    tone: 'lit' | 'bus' | 'hot' = 'lit',
-  ): HTMLElement {
-    const handle = createToggle({
+  function flag(module: ModuleId, key: string, label: string): HTMLElement {
+    const handle = createSwitch({
       label,
-      tone,
       on: (chain[module] as unknown as Record<string, boolean>)[key] === true,
       onChange: (on) => patch({ [module]: { [key]: on } } as Partial<ChainState>),
     })
-    toggles.set(`${module}.${key}`, {
+    switches.set(`${module}.${key}`, {
       handle,
       read: (c) => (c[module] as unknown as Record<string, boolean>)[key] === true,
     })
-    return handle.el
+    return el('div', { class: 'ap-row' }, [
+      el('span', { class: 'ap-label', style: 'flex:1', text: label }),
+      handle.el,
+    ])
   }
 
-  /** A module panel with its legend, power cap and body. */
-  function panel(
-    module: ModuleId,
-    body: Array<Node | null>,
-    opts: { power?: boolean; span?: 'wide' | 'double'; extraHead?: Node } = {},
-  ): HTMLElement {
-    const power = opts.power === false ? null : powerToggle(module)
-    const disabledReason = options.disabled?.[module]
-    const bodyEl = el('div', { class: 'ap-module-body' }, body.filter(Boolean) as Node[])
+  function buildModule(id: ModuleId): HTMLElement {
+    const reason = options.disabled?.[id]
+    const body: Node[] = []
+
+    if (id === 'eq') {
+      eq = createEq({
+        bands: chain.eq.bands,
+        focused: options.eqBand,
+        onInput: (bands) => patch({ eq: { on: true, bands } }),
+        onFocusBand: options.onFocusBand,
+      })
+      cleanups.push(() => eq?.destroy())
+      body.push(eq.el)
+    } else {
+      for (const [key, label] of MODULE_PARAMS[id] ?? []) body.push(slider(id, key, label))
+      for (const [key, label] of MODULE_FLAGS[id] ?? []) body.push(flag(id, key, label))
+    }
+
+    // gain and pan are always on; the rest carry a switch.
+    const hasSwitch = typeof (chain[id] as { on?: boolean }).on === 'boolean'
+    let power: SwitchHandle | null = null
+    if (hasSwitch) {
+      power = createSwitch({
+        label: `Engage ${MODULE_LABELS[id]}`,
+        on: (chain[id] as { on?: boolean }).on === true,
+        onChange: (on) => patch({ [id]: { on } } as Partial<ChainState>),
+      })
+      switches.set(`${id}.on`, {
+        handle: power,
+        read: (c) => (c[id] as { on?: boolean }).on === true,
+      })
+    }
+
     const node = el(
       'div',
       {
         class: 'ap-module',
-        'data-span': opts.span ?? 'normal',
-        'data-on': String(power ? (chain[module] as { on?: boolean }).on === true : true),
+        'data-span': id === 'eq' ? 'wide' : 'normal',
+        'data-on': String(!hasSwitch || (chain[id] as { on?: boolean }).on === true),
       },
       [
         el('div', { class: 'ap-module-head' }, [
-          el('div', { class: 'ap-legend ap-module-title', text: MODULE_LABELS[module] }),
-          opts.extraHead ?? null,
+          el('span', { class: 'ap-label', text: MODULE_LABELS[id] }),
           power?.el ?? null,
         ]),
-        disabledReason
-          ? el('div', { class: 'ap-strip-sub', text: disabledReason })
-          : bodyEl,
+        reason
+          ? el('div', { class: 'ap-note', text: reason })
+          : el('div', { class: 'ap-module-body' }, body),
       ],
     )
-    if (disabledReason) node.setAttribute('data-on', 'false')
-    panels.set(module, node)
+    if (reason) node.setAttribute('data-on', 'false')
+    panels.set(id, node)
     return node
   }
 
-  // ---------------------------------------------------------------- panels
-
-  const levelFader: FaderHandle = createFader({
-    spec: paramSpec('gain', 'level'),
-    value: chain.gain.level,
-    onInput: (level) => patch({ gain: { level, mute: chain.gain.mute } }),
-  })
-  cleanups.push(() => levelFader.destroy())
-
-  const meter: MeterHandle = createMeter({ wide: true })
-
-  const muteToggle = createToggle({
-    label: 'Mute',
-    tone: 'hot',
-    on: chain.gain.mute,
-    onChange: (mute) => patch({ gain: { level: chain.gain.level, mute } }),
-  })
-  toggles.set('gain.mute', { handle: muteToggle, read: (c) => c.gain.mute })
-
-  const eq: EqHandle = createEq({
-    bands: chain.eq.bands,
-    focused: options.eqBand,
-    onInput: (bands) => patch({ eq: { on: true, bands } }),
-    onFocusBand: options.onFocusBand,
-  })
-  cleanups.push(() => eq.destroy())
-
-  const builders: Record<ModuleId, () => HTMLElement> = {
-    gain: () =>
-      panel(
-        'gain',
-        [
-          el('div', { style: 'display:flex;gap:12px;align-items:flex-end' }, [
-            levelFader.el,
-            meter.el,
-          ]),
-          el('div', { style: 'display:flex;flex-direction:column;gap:8px' }, [
-            knob('pan', 'value', 'Pan'),
-            muteToggle.el,
-          ]),
-        ],
-        { power: false },
-      ),
-    pan: () => el('div'), // rendered inside the Level panel
-    eq: () => panel('eq', [eq.el], { span: 'double' }),
-    tone: () => panel('tone', [knob('tone', 'bass'), knob('tone', 'treble')]),
-    filter: () =>
-      panel('filter', [
-        knob('filter', 'highpass', 'HP'),
-        knob('filter', 'lowpass', 'LP'),
-        knob('filter', 'resonance', 'Res'),
-      ]),
-    comp: () =>
-      panel(
-        'comp',
-        [
-          knob('comp', 'threshold', 'Thresh'),
-          knob('comp', 'ratio'),
-          knob('comp', 'attack'),
-          knob('comp', 'release'),
-          knob('comp', 'knee'),
-          knob('comp', 'makeup'),
-        ],
-        { span: 'double' },
-      ),
-    limiter: () => panel('limiter', [knob('limiter', 'ceiling'), knob('limiter', 'release')]),
-    gate: () =>
-      panel(
-        'gate',
-        [
-          knob('gate', 'threshold', 'Thresh'),
-          knob('gate', 'attack'),
-          knob('gate', 'release'),
-          knob('gate', 'floor'),
-        ],
-        { span: 'double' },
-      ),
-    reverb: () =>
-      panel(
-        'reverb',
-        [
-          knob('reverb', 'mix'),
-          knob('reverb', 'size'),
-          knob('reverb', 'decay'),
-          knob('reverb', 'damping', 'Damp'),
-        ],
-        { span: 'double' },
-      ),
-    delay: () =>
-      panel(
-        'delay',
-        [
-          knob('delay', 'mix'),
-          knob('delay', 'time'),
-          knob('delay', 'feedback', 'Fdbk'),
-          el('div', { class: 'ap-switches' }, [flagToggle('delay', 'pingPong', 'Ping-pong')]),
-        ],
-        { span: 'double' },
-      ),
-    width: () =>
-      panel('width', [
-        knob('width', 'amount', 'Width'),
-        el('div', { class: 'ap-switches' }, [flagToggle('width', 'mono', 'Mono')]),
-      ]),
-    pitch: () => panel('pitch', [knob('pitch', 'semitones', 'Semitones')]),
-    speed: () => panel('speed', [knob('speed', 'rate', 'Rate')]),
+  function renderTabs(): void {
+    tabs.replaceChildren(
+      ...MODULE_GROUPS.map((entry) => {
+        const active = entry.title === group
+        const engaged = entry.modules.filter(
+          (id) => (chain[id] as { on?: boolean }).on === true,
+        ).length
+        const button = el('button', {
+          class: 'ap-tab',
+          type: 'button',
+          role: 'tab',
+          'data-on': String(active),
+          'aria-selected': String(active),
+          onclick: () => {
+            group = entry.title
+            options.onGroupChange(entry.title)
+            renderGroup()
+            renderTabs()
+          },
+        })
+        button.append(entry.title)
+        if (engaged > 0) button.append(el('sup', { text: String(engaged) }))
+        return button
+      }),
+    )
   }
 
-  const modules = el('div', { class: 'ap-modules' })
-  for (const group of MODULE_GROUPS) {
-    for (const id of group.modules) {
-      if (id === 'pan') continue // lives in the Level panel
-      modules.append(builders[id]())
-    }
+  function renderGroup(): void {
+    // Controls for the outgoing group are discarded; the maps are rebuilt so
+    // `update` never writes to a detached node.
+    for (const cleanup of cleanups.splice(0)) cleanup()
+    sliders.clear()
+    switches.clear()
+    panels.clear()
+    eq = null
+
+    const entry = MODULE_GROUPS.find((g) => g.title === group) ?? MODULE_GROUPS[0]!
+    modules.replaceChildren(...entry.modules.map(buildModule))
   }
 
-  const root = el('div', { class: 'ap-desk-inner' }, [modules])
+  renderGroup()
+  renderTabs()
 
   return {
     el: root,
-    update(nextChain, level, eqBand) {
+    group: () => group,
+    setGroup(title) {
+      if (title === group) return
+      group = title
+      renderGroup()
+      renderTabs()
+    },
+    update(nextChain, eqBand) {
       chain = nextChain
-      for (const [, entry] of knobs) {
+      for (const [, entry] of sliders) {
         entry.handle.set(readParam(chain, entry.module, entry.key))
       }
-      for (const [, entry] of toggles) entry.handle.set(entry.read(chain))
-      levelFader.set(chain.gain.level)
-      meter.set(level)
-      eq.set(chain.eq.bands, eqBand)
+      for (const [, entry] of switches) entry.handle.set(entry.read(chain))
+      eq?.set(chain.eq.bands, eqBand)
 
       for (const [id, node] of panels) {
         const power = (chain[id] as { on?: boolean }).on
         const enabled = options.disabled?.[id] ? false : power !== false
         node.setAttribute('data-on', String(chain.bypass ? false : enabled))
       }
+      renderTabs()
     },
     destroy() {
       for (const cleanup of cleanups) cleanup()

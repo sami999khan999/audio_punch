@@ -1,44 +1,44 @@
 /**
  * Service worker — the coordinator.
  *
- * Owns the settings, the tab registry and the connection to the audio engine.
- * The overlay and the dashboard hold no authoritative state of their own: they
- * send intents and render the snapshot they get back, which is what keeps two
- * open surfaces (and the global strip inside each) consistent for free.
+ * Owns the settings and the tab registry. The audio engine now lives in each
+ * page's content script, so this worker's job is to resolve the right chain for
+ * every page's origin and push it there, then relay the levels that come back
+ * to whichever UI surfaces are open.
+ *
+ * The overlay and the dashboard hold no authoritative state: they send intents
+ * and render the snapshot they get back, which is what keeps two open surfaces
+ * (and the global strip inside each) consistent for free.
  */
 import { chromePlatform } from '../platform/chrome.ts'
 import {
-  PORT_ENGINE,
   PORT_UI,
   type Broadcast,
   type ContentCommand,
-  type EngineCommand,
-  type EngineEvent,
   type ToBackground,
   type UiRequest,
   type UiResponse,
 } from '../shared/messages.ts'
 import { applyImport, makeExport, validateImport } from '../shared/migrate.ts'
-import { isDrmOrigin, originOf } from '../shared/origin.ts'
-import type { LevelReading, StateSnapshot } from '../shared/types.ts'
+import { originOf } from '../shared/origin.ts'
+import type { Background, LevelReading, StateSnapshot } from '../shared/types.ts'
 import { SettingsStore } from './settings.ts'
 import { TabRegistry } from './tab-registry.ts'
 import { resolveChain } from './resolve.ts'
+
+const BACKGROUND_KEY = 'audio-punch:background'
+const NO_BACKGROUND: Background = { kind: 'none', dataUrl: '', name: '', updatedAt: 0 }
 
 const platform = chromePlatform
 const store = new SettingsStore(platform)
 const registry = new TabRegistry(platform)
 
-let enginePort: chrome.runtime.Port | null = null
-let engineReady = false
 const uiPorts = new Set<chrome.runtime.Port>()
-let lastLevels: Record<number, LevelReading> = {}
+const levels: Record<number, LevelReading> = {}
+/** True while at least one UI is open, which is the only time metering runs. */
+let metering = false
 
 // ---------------------------------------------------------------- plumbing
-
-function toEngine(command: EngineCommand): void {
-  enginePort?.postMessage(command)
-}
 
 function broadcast(message: Broadcast): void {
   for (const port of uiPorts) {
@@ -60,7 +60,7 @@ async function snapshot(selfTabId: number | null): Promise<StateSnapshot> {
     settings: store.current(),
     tabs: registry.list(),
     selfTabId,
-    engineReady,
+    engineReady: true,
   }
 }
 
@@ -76,85 +76,51 @@ async function publishState(): Promise<void> {
   }
 }
 
-/** Pushes the resolved chain for every armed tab down to the engine. */
-async function syncEngine(): Promise<void> {
-  const settings = store.current()
-  for (const tabId of registry.armedTabs()) {
-    const origin = await registry.originFor(tabId)
-    const chain = resolveChain(settings, origin)
-    toEngine({ type: 'engine:chain', tabId, chain })
-    await syncPlaybackRate(tabId, chain.speed.on && !chain.bypass ? chain.speed.rate : 1)
-  }
+async function readBackground(): Promise<Background> {
+  return (await platform.storage.read<Background>(BACKGROUND_KEY)) ?? NO_BACKGROUND
 }
 
+// ------------------------------------------------------------- chain push
+
 /**
- * Playback speed is not something the audio graph can do under tab capture —
- * it has to be set on the page's own media elements, so it travels to the
- * content script instead of the engine.
+ * Sends every page the chain resolved for its origin.
  *
- * Only sent on an actual change: syncEngine runs on every knob movement, and
- * messaging a content script sixty times a second to tell it nothing changed
- * is a waste on both ends.
+ * Playback speed rides along separately: it is applied to the page's media
+ * elements rather than in the audio graph, so the content script needs it as
+ * its own instruction.
  */
 const sentRates = new Map<number, number>()
 
-async function syncPlaybackRate(tabId: number, rate: number): Promise<void> {
+async function pushChains(): Promise<void> {
+  const settings = store.current()
+  await registry.refresh()
+  for (const tab of registry.list()) {
+    const chain = resolveChain(settings, tab.origin)
+    await platform.tabs.sendMessage(tab.tabId, { type: 'content:chain', chain } satisfies ContentCommand)
+    await pushRate(tab.tabId, chain.speed.on && !chain.bypass ? chain.speed.rate : 1)
+  }
+}
+
+async function pushChain(tabId: number, origin: string): Promise<void> {
+  const chain = resolveChain(store.current(), origin)
+  await platform.tabs.sendMessage(tabId, { type: 'content:chain', chain } satisfies ContentCommand)
+  await pushRate(tabId, chain.speed.on && !chain.bypass ? chain.speed.rate : 1)
+}
+
+/** Only sent on a real change: pushChains runs on every knob movement. */
+async function pushRate(tabId: number, rate: number): Promise<void> {
   if (sentRates.get(tabId) === rate) return
   sentRates.set(tabId, rate)
   await platform.tabs.sendMessage(tabId, { type: 'content:set-rate', rate } satisfies ContentCommand)
 }
 
-// ------------------------------------------------------------------ arming
-
-async function armTab(tabId: number, opts: { viaActivation?: boolean; confirmDrm?: boolean } = {}): Promise<void> {
-  const origin = await registry.originFor(tabId)
-  if (!origin) {
-    toast('warn', 'This page cannot be captured.')
-    return
+async function setMetering(enabled: boolean): Promise<void> {
+  if (metering === enabled) return
+  metering = enabled
+  await registry.refresh()
+  for (const tab of registry.list()) {
+    await platform.tabs.sendMessage(tab.tabId, { type: 'content:meters', enabled } satisfies ContentCommand)
   }
-  if (isDrmOrigin(origin) && !opts.confirmDrm) {
-    toast(
-      'warn',
-      'This site uses protected playback. Capturing it will silence the tab — arm again to try anyway.',
-    )
-    registry.markBlocked(tabId, 'drm')
-    await publishState()
-    return
-  }
-
-  await platform.ensureEngine()
-  const outcome = opts.viaActivation ? await registry.armViaActivation(tabId) : await registry.arm(tabId)
-
-  if (!outcome.ok) {
-    if (outcome.needsActivation) {
-      toast('warn', 'Switch to that tab (or press the shortcut there) to let the browser hand over its audio.')
-    } else {
-      toast('error', outcome.error ?? 'The browser refused to capture this tab.')
-    }
-    await publishState()
-    return
-  }
-
-  if (outcome.streamId) {
-    toEngine({
-      type: 'engine:attach',
-      tabId,
-      streamId: outcome.streamId,
-      chain: resolveChain(store.current(), origin),
-    })
-  }
-  const chain = resolveChain(store.current(), origin)
-  await syncPlaybackRate(tabId, chain.speed.on && !chain.bypass ? chain.speed.rate : 1)
-  await publishState()
-}
-
-async function releaseTab(tabId: number): Promise<void> {
-  registry.release(tabId)
-  toEngine({ type: 'engine:detach', tabId })
-  // Releasing must hand the page back exactly as we found it, speed included.
-  await syncPlaybackRate(tabId, 1)
-  sentRates.delete(tabId)
-  await publishState()
 }
 
 // ------------------------------------------------------------- UI requests
@@ -162,50 +128,42 @@ async function releaseTab(tabId: number): Promise<void> {
 async function handleUiRequest(request: UiRequest, senderTabId: number | null): Promise<UiResponse> {
   switch (request.type) {
     case 'ui:hello':
-      return { ok: true, snapshot: await snapshot(senderTabId) }
+      return { ok: true, snapshot: await snapshot(senderTabId), background: await readBackground() }
 
     case 'ui:patch-chain':
       store.patchChain(request.target, request.patch)
-      await syncEngine()
+      await pushChains()
       return { ok: true }
 
     case 'ui:reset-chain':
       store.resetChain(request.target)
-      await syncEngine()
+      await pushChains()
       return { ok: true }
 
     case 'ui:set-global-on':
       store.update((s) => {
         s.global.on = request.on
       })
-      await syncEngine()
+      await pushChains()
       return { ok: true }
 
     case 'ui:set-ignore-global':
       store.setIgnoreGlobal(request.origin, request.value)
-      await syncEngine()
-      return { ok: true }
-
-    case 'ui:arm':
-      await armTab(request.tabId, { viaActivation: senderTabId !== request.tabId, confirmDrm: request.confirmDrm })
-      return { ok: true }
-
-    case 'ui:release':
-      await releaseTab(request.tabId)
+      await pushChains()
       return { ok: true }
 
     case 'ui:mute-all':
       store.update((s) => {
         s.muteAll = request.value ?? !s.muteAll
       })
-      await syncEngine()
+      await pushChains()
       return { ok: true }
 
     case 'ui:bypass-all':
       store.update((s) => {
         s.bypassAll = request.value ?? !s.bypassAll
       })
-      await syncEngine()
+      await pushChains()
       return { ok: true }
 
     case 'ui:save-template': {
@@ -215,7 +173,7 @@ async function handleUiRequest(request: UiRequest, senderTabId: number | null): 
         request.modules,
         request.source,
       )
-      toast('info', `Saved template "${template.name}".`)
+      toast('info', `Saved "${template.name}".`)
       return { ok: true, template }
     }
 
@@ -225,17 +183,17 @@ async function handleUiRequest(request: UiRequest, senderTabId: number | null): 
       } catch (err) {
         return { ok: false, error: err instanceof Error ? err.message : String(err) }
       }
-      await syncEngine()
+      await pushChains()
       return { ok: true }
 
     case 'ui:remove-template':
       store.removeTemplate(request.target)
-      await syncEngine()
+      await pushChains()
       return { ok: true }
 
     case 'ui:delete-template':
       store.deleteTemplate(request.templateId)
-      await syncEngine()
+      await pushChains()
       return { ok: true }
 
     case 'ui:rename-template':
@@ -260,7 +218,7 @@ async function handleUiRequest(request: UiRequest, senderTabId: number | null): 
 
     case 'ui:forget-site':
       store.forgetSite(request.origin)
-      await syncEngine()
+      await pushChains()
       return { ok: true }
 
     case 'ui:export':
@@ -271,7 +229,7 @@ async function handleUiRequest(request: UiRequest, senderTabId: number | null): 
       if (!result.ok) return { ok: false, error: result.error }
       store.replaceAll(applyImport(store.current(), result.settings, request.mode))
       await store.flush()
-      await syncEngine()
+      await pushChains()
       for (const warning of result.warnings) toast('warn', warning)
       toast('info', request.mode === 'replace' ? 'Settings replaced.' : 'Settings merged.')
       return { ok: true, snapshot: await snapshot(senderTabId) }
@@ -282,26 +240,25 @@ async function handleUiRequest(request: UiRequest, senderTabId: number | null): 
       return { ok: true }
 
     case 'ui:meters':
-      toEngine({ type: 'engine:meters', enabled: request.enabled && store.current().ui.meters })
+      await setMetering(request.enabled && store.current().ui.meters)
       return { ok: true }
+
+    case 'ui:get-background':
+      return { ok: true, background: await readBackground() }
+
+    case 'ui:set-background': {
+      // Kept out of Settings on purpose — a video would otherwise be
+      // re-broadcast to every surface on every knob movement.
+      await platform.storage.write(BACKGROUND_KEY, request.background)
+      broadcast({ type: 'background', background: request.background })
+      return { ok: true, background: request.background }
+    }
   }
 }
 
 // ------------------------------------------------------------------- ports
 
 chrome.runtime.onConnect.addListener((port) => {
-  if (port.name === PORT_ENGINE) {
-    enginePort = port
-    port.onMessage.addListener((event: EngineEvent) => {
-      void handleEngineEvent(event)
-    })
-    port.onDisconnect.addListener(() => {
-      enginePort = null
-      engineReady = false
-    })
-    return
-  }
-
   if (port.name !== PORT_UI) return
   uiPorts.add(port)
   const senderTabId = port.sender?.tab?.id ?? null
@@ -327,50 +284,48 @@ chrome.runtime.onConnect.addListener((port) => {
 
   port.onDisconnect.addListener(() => {
     uiPorts.delete(port)
-    if (uiPorts.size === 0) toEngine({ type: 'engine:meters', enabled: false })
+    if (uiPorts.size === 0) void setMetering(false)
   })
 
   void (async () => {
     await store.load()
     port.postMessage({ type: 'state', snapshot: await snapshot(senderTabId) })
+    port.postMessage({ type: 'background', background: await readBackground() })
   })()
 })
-
-async function handleEngineEvent(event: EngineEvent): Promise<void> {
-  switch (event.type) {
-    case 'engine:ready':
-      engineReady = true
-      await publishState()
-      break
-    case 'engine:attached':
-      await publishState()
-      break
-    case 'engine:ended':
-      registry.release(event.tabId)
-      await publishState()
-      break
-    case 'engine:error':
-      if (event.tabId !== null) registry.markBlocked(event.tabId, 'capture-failed')
-      toast('error', event.message)
-      await publishState()
-      break
-    case 'engine:meters':
-      lastLevels = event.levels
-      broadcast({ type: 'meters', levels: lastLevels })
-      break
-  }
-}
 
 // -------------------------------------------------------- one-shot messages
 
 chrome.runtime.onMessage.addListener((message: ToBackground, sender, sendResponse) => {
   const senderTabId = sender.tab?.id ?? null
 
-  if (message?.type === 'content:media-report') {
-    if (senderTabId !== null) registry.setMediaPresence(senderTabId, message.hasMediaElements)
-    void publishState()
-    sendResponse({ ok: true })
-    return false
+  if (message?.type === 'content:report') {
+    if (senderTabId !== null) {
+      registry.record(senderTabId, {
+        hasMediaElements: message.hasMediaElements,
+        count: message.count,
+        hooked: message.hooked,
+        silent: message.silent,
+      })
+      if (message.level) {
+        levels[senderTabId] = message.level
+        broadcast({ type: 'meters', levels })
+      } else {
+        void publishState()
+      }
+    }
+    // Answer with the chain and the metering state, so a freshly loaded page
+    // configures itself from one round trip instead of waiting for a push.
+    void (async () => {
+      await store.load()
+      const origin = senderTabId === null ? '' : await registry.originFor(senderTabId)
+      sendResponse({
+        ok: true,
+        chain: resolveChain(store.current(), origin),
+        meters: metering,
+      })
+    })()
+    return true
   }
 
   void store
@@ -380,7 +335,7 @@ chrome.runtime.onMessage.addListener((message: ToBackground, sender, sendRespons
     .catch((err) =>
       sendResponse({ ok: false, error: err instanceof Error ? err.message : String(err) }),
     )
-  return true // response is asynchronous
+  return true
 })
 
 // ---------------------------------------------------------------- commands
@@ -397,9 +352,6 @@ chrome.commands.onCommand.addListener((command, tab) => {
     switch (command) {
       case 'toggle-overlay':
         if (tabId === null) break
-        // The shortcut is itself the user gesture that lets us capture this
-        // tab, so take the opportunity while we have it.
-        if (!registry.isArmed(tabId)) await armTab(tabId)
         await platform.tabs.sendMessage(tabId, { type: 'content:toggle-overlay' } satisfies ContentCommand)
         break
 
@@ -408,7 +360,7 @@ chrome.commands.onCommand.addListener((command, tab) => {
           s.global.on = !s.global.on
         })
         toast('info', store.current().global.on ? 'Global chain on' : 'Global chain off')
-        await syncEngine()
+        await pushChains()
         break
 
       case 'mute-all':
@@ -416,7 +368,7 @@ chrome.commands.onCommand.addListener((command, tab) => {
           s.muteAll = !s.muteAll
         })
         toast('info', store.current().muteAll ? 'All tabs muted' : 'Mute released')
-        await syncEngine()
+        await pushChains()
         break
 
       case 'bypass-all':
@@ -424,7 +376,7 @@ chrome.commands.onCommand.addListener((command, tab) => {
           s.bypassAll = !s.bypassAll
         })
         toast('info', store.current().bypassAll ? 'Processing bypassed' : 'Processing re-engaged')
-        await syncEngine()
+        await pushChains()
         break
     }
     await publishState()
@@ -435,35 +387,29 @@ chrome.action.onClicked.addListener((tab) => {
   void (async () => {
     await store.load()
     if (tab.id === undefined) return
-    if (!registry.isArmed(tab.id)) await armTab(tab.id)
     await platform.tabs.sendMessage(tab.id, { type: 'content:open-overlay' } satisfies ContentCommand)
   })()
 })
 
-// ------------------------------------------------------------- tab lifecycle
+// ------------------------------------------------------------ tab lifecycle
 
 chrome.tabs.onRemoved.addListener((tabId) => {
-  registry.release(tabId)
+  registry.forget(tabId)
   sentRates.delete(tabId)
-  toEngine({ type: 'engine:detach', tabId })
+  delete levels[tabId]
   void publishState()
 })
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   void (async () => {
     await store.load()
-    // A navigation within the same origin keeps the capture valid, so only
-    // re-resolve; a cross-origin navigation needs a different chain.
-    if (changeInfo.url && registry.isArmed(tabId)) {
+    if (changeInfo.url) {
+      // A navigation replaces the page's media elements, so the rate must be
+      // resent even when its value has not changed.
+      registry.forget(tabId)
+      sentRates.delete(tabId)
       const origin = originOf(changeInfo.url)
-      if (origin) {
-        const chain = resolveChain(store.current(), origin)
-        toEngine({ type: 'engine:chain', tabId, chain })
-        // A navigation replaces the media elements, so the rate must be resent
-        // even when its value is unchanged.
-        sentRates.delete(tabId)
-        await syncPlaybackRate(tabId, chain.speed.on && !chain.bypass ? chain.speed.rate : 1)
-      }
+      if (origin) await pushChain(tabId, origin)
     }
     if (changeInfo.audible !== undefined || changeInfo.status === 'complete' || changeInfo.url) {
       await publishState()
@@ -471,17 +417,6 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   })()
 })
 
-chrome.runtime.onStartup.addListener(() => {
-  void store.load()
-})
-
-chrome.runtime.onInstalled.addListener(() => {
-  void store.load()
-})
-
-// Bring the engine back if this worker restarted while graphs were still live.
-void (async () => {
-  await store.load()
-  await platform.ensureEngine().catch(() => undefined)
-  chrome.runtime.sendMessage({ type: 'engine:reconnect' }).catch(() => undefined)
-})()
+chrome.runtime.onStartup.addListener(() => void store.load())
+chrome.runtime.onInstalled.addListener(() => void store.load())
+void store.load()

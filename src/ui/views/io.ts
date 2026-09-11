@@ -10,7 +10,7 @@ import { prettyOrigin } from '../../shared/origin.ts'
 import { DEFAULT_UI } from '../../shared/defaults.ts'
 import { isChainNeutral } from '../../shared/defaults.ts'
 import { el } from '../core/dom.ts'
-import { createButton, createToggle } from '../controls/toggle.ts'
+import { createPillEl, createSwitch } from '../controls/switch.ts'
 import type { UiState, UiStore } from '../core/store.ts'
 
 export interface SettingsViewHandle {
@@ -27,7 +27,7 @@ export function createSettingsView(store: UiStore): SettingsViewHandle {
   let pending: { settings: unknown; summary: string } | null = null
 
   const siteList = el('div', { class: 'ap-list' })
-  const importStatus = el('div', { class: 'ap-row-sub', style: 'white-space:normal' })
+  const importStatus = el('div', { class: 'ap-listrow-sub', style: 'white-space:normal' })
   const importActions = el('div', { style: 'display:none;gap:6px;margin-top:10px' })
 
   const fileInput = el('input', {
@@ -98,9 +98,9 @@ export function createSettingsView(store: UiStore): SettingsViewHandle {
   }
 
   importActions.replaceChildren(
-    createButton({ label: 'Merge', title: 'Keep what is here and add from the file', onClick: () => void runImport('merge') }),
-    createButton({ label: 'Replace everything', tone: 'hot', onClick: () => void runImport('replace') }),
-    createButton({
+    createPillEl({ label: 'Merge', title: 'Keep what is here and add from the file', onClick: () => void runImport('merge') }),
+    createPillEl({ label: 'Replace everything', tone: 'hot', onClick: () => void runImport('replace') }),
+    createPillEl({
       label: 'Cancel',
       onClick: () => {
         pending = null
@@ -110,14 +110,13 @@ export function createSettingsView(store: UiStore): SettingsViewHandle {
     }),
   )
 
-  const metersToggle = createToggle({
-    label: 'Meters',
+  const metersToggle = createSwitch({
+    label: 'Draw level meters (costs a little CPU per page)',
     on: DEFAULT_UI.meters,
-    title: 'Draw level meters (costs a little CPU per captured tab)',
     onChange: (meters) => void store.send({ type: 'ui:set-ui-prefs', patch: { meters } }),
   })
 
-  const motionToggle = createToggle({
+  const motionToggle = createSwitch({
     label: 'Reduce motion',
     on: DEFAULT_UI.reduceMotion,
     onChange: (reduceMotion) => void store.send({ type: 'ui:set-ui-prefs', patch: { reduceMotion } }),
@@ -136,27 +135,34 @@ export function createSettingsView(store: UiStore): SettingsViewHandle {
 
   const root = el('div', { class: 'ap-section' }, [
     el('div', {}, [
-      el('div', { class: 'ap-card', style: 'margin-bottom:14px' }, [
-        el('div', { class: 'ap-legend', style: 'margin-bottom:10px', text: 'Backup' }),
+      el('div', { class: 'ap-glass ap-card', style: 'margin-bottom:14px' }, [
+        el('div', { class: 'ap-label', style: 'margin-bottom:10px', text: 'Backup' }),
         el('div', { style: 'display:flex;gap:6px;flex-wrap:wrap' }, [
-          createButton({ label: 'Export…', onClick: exportSettings }),
-          createButton({ label: 'Import…', onClick: () => fileInput.click() }),
+          createPillEl({ label: 'Export…', onClick: exportSettings }),
+          createPillEl({ label: 'Import…', onClick: () => fileInput.click() }),
         ]),
         fileInput,
         el('div', { style: 'margin-top:10px' }, [importStatus]),
         importActions,
       ]),
-      el('div', { class: 'ap-card' }, [
-        el('div', { class: 'ap-legend', style: 'margin-bottom:10px', text: 'Appearance' }),
-        el('div', { style: 'display:flex;gap:8px;align-items:center;flex-wrap:wrap' }, [
+      el('div', { class: 'ap-glass ap-card' }, [
+        el('div', { class: 'ap-label', style: 'margin-bottom:10px', text: 'Appearance' }),
+        el('div', { class: 'ap-row', style: 'margin-bottom:9px' }, [
+          el('span', { class: 'ap-label', style: 'flex:1', text: 'Level meters' }),
           metersToggle.el,
+        ]),
+        el('div', { class: 'ap-row', style: 'margin-bottom:9px' }, [
+          el('span', { class: 'ap-label', style: 'flex:1', text: 'Reduce motion' }),
           motionToggle.el,
+        ]),
+        el('div', { class: 'ap-row' }, [
+          el('span', { class: 'ap-label', style: 'flex:1', text: 'Accent' }),
           accentInput,
         ]),
       ]),
     ]),
     el('div', {}, [
-      el('div', { class: 'ap-legend', style: 'margin-bottom:8px', text: 'Saved sites' }),
+      el('div', { class: 'ap-label', style: 'margin-bottom:8px', text: 'Saved sites' }),
       siteList,
     ]),
   ])
@@ -167,7 +173,7 @@ export function createSettingsView(store: UiStore): SettingsViewHandle {
 
     if (origins.length === 0) {
       siteList.replaceChildren(
-        el('div', { class: 'ap-strip-sub', style: 'white-space:normal;padding:8px 2px' }, [
+        el('div', { class: 'ap-note', style: 'white-space:normal;padding:8px 2px' }, [
           'Nothing saved yet. Adjust a tab in the mixer and it will appear here.',
         ]),
       )
@@ -178,17 +184,16 @@ export function createSettingsView(store: UiStore): SettingsViewHandle {
       ...origins.map((origin) => {
         const site = sites[origin]!
         const following = global.on && !site.ignoreGlobal
-        const pin = createToggle({
-          label: 'Pin',
+        const pin = createSwitch({
+          label: 'Keep this site on its own chain even while global is on',
           on: site.ignoreGlobal,
-          title: 'Keep this site on its own chain even while global is on',
           onChange: (value) => void store.send({ type: 'ui:set-ignore-global', origin, value }),
         })
-        return el('div', { class: 'ap-row' }, [
-          el('div', { class: 'ap-row-main' }, [
-            el('div', { class: 'ap-row-title', text: prettyOrigin(origin) }),
+        return el('div', { class: 'ap-listrow' }, [
+          el('div', { class: 'ap-listrow-main' }, [
+            el('div', { class: 'ap-listrow-title', text: prettyOrigin(origin) }),
             el('div', {
-              class: 'ap-row-sub',
+              class: 'ap-listrow-sub',
               text: [
                 isChainNeutral(site.chain) ? 'Flat' : 'Has a chain',
                 site.snapshot ? `Template: ${site.snapshot.templateName}` : null,
@@ -198,8 +203,9 @@ export function createSettingsView(store: UiStore): SettingsViewHandle {
                 .join(' · '),
             }),
           ]),
+          el('span', { class: 'ap-label', text: 'Pin' }),
           pin.el,
-          createButton({
+          createPillEl({
             label: 'Forget',
             tone: 'hot',
             onClick: () => void store.send({ type: 'ui:forget-site', origin }),
