@@ -23,13 +23,24 @@ That is the whole feature set.
 
 ## Install
 
+The built extension is committed, so nothing needs building to use it:
+
+```bash
+git clone https://github.com/sami999khan999/audio_punch.git
+```
+
+**chrome://extensions** → enable **Developer mode** → **Load unpacked** →
+choose `audio_punch/dist/chrome`.
+
+To build it yourself after a change:
+
 ```bash
 npm install
 npm run build          # → dist/chrome
 ```
 
-**chrome://extensions** → enable **Developer mode** → **Load unpacked** →
-choose `dist/chrome`.
+`dist/` is tracked on purpose. Rebuild and commit it alongside any source
+change, or the loaded extension and the source drift apart.
 
 ---
 
@@ -51,6 +62,23 @@ The shortcuts act on whichever scope the popup is set to: with *This site*
 selected they change the current site, with *All sites* they change the global
 volume. Turning the volume up while muted unmutes rather than raising a level
 nobody can hear.
+
+### Fullscreen
+
+Shortcuts work on fullscreen video, and the new value appears briefly on screen.
+
+That needs explaining, because it does not come for free. The browser restricts
+keyboard input while a page is fullscreen, so `chrome.commands` stops firing —
+and the toolbar is hidden, so the popup is out of reach as well. The content
+script therefore listens for the shortcuts itself, but **only while the document
+is fullscreen**: outside it `chrome.commands` works, and handling the keys in
+both places would apply every press twice.
+
+It reads the live bindings from `chrome.commands.getAll()` rather than the
+manifest defaults, so rebinding a shortcut is respected in fullscreen too. The
+on-screen value is appended to the fullscreen element, because a fullscreen
+element is promoted to the browser's top layer where nothing outside it renders
+at all — no z-index reaches past it.
 
 ---
 
@@ -99,6 +127,13 @@ Two details worth knowing before editing:
   later failure look like "receiving end does not exist".
 - **Storage writes are debounced.** Holding the volume shortcut would otherwise
   write on every keypress.
+- **The popup updates live.** The worker broadcasts after every change, and the
+  popup also watches `chrome.storage`, so a shortcut pressed while it is open is
+  reflected immediately. A broadcast arriving mid-drag is ignored, or the knob
+  would snap back under the pointer.
+- **Chrome's shortcut strings are display spellings, not manifest ones.** A
+  manifest `"Up"` comes back from `chrome.commands.getAll()` as `"Up Arrow"`.
+  The parser strips spaces and maps both.
 
 ---
 
@@ -125,10 +160,10 @@ popup renders and drives it, a per-site volume reaches the page and is stored
 against the right origin, global overrides it, and turning global off restores
 it.
 
-One gap, stated plainly: `chrome.commands` cannot be triggered from headless
-Chromium, so the shortcut *dispatch* is not covered end to end. The logic behind
-each command — `nudge`, `readScope`, `writeScope` — is the same code the popup
-path uses, and that is tested both ways.
+It also drives the real shortcuts against a fullscreen video, which is the one
+end-to-end cover the shortcut path has: `chrome.commands` itself cannot be fired
+from headless Chromium, but the in-page fullscreen fallback receives ordinary key
+events and runs exactly the same worker code that `chrome.commands` does.
 
 Icons are generated, not committed as opaque assets:
 `node scripts/make-icons.mjs`.

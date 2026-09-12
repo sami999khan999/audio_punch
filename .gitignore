@@ -1,5 +1,9 @@
 node_modules/
-dist/
+
+# dist/ is deliberately committed: the built extension is the thing you load,
+# and keeping it in the repo means it can be used without a toolchain. Rebuild
+# with `npm run build` and commit the result alongside any source change.
+
 *.zip
 .DS_Store
 *.log

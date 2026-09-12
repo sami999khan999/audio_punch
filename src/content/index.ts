@@ -12,12 +12,91 @@
  *    itself. If the gain node is not connected through to the destination, the
  *    page goes silent — a far worse failure than a volume not applying.
  */
-import type { ContentCommand, ContentReport } from '../shared/messages.ts'
+import type { Binding, CommandName, ContentCommand, ContentReport } from '../shared/messages.ts'
 import type { AudioState } from '../shared/types.ts'
+import { formatVolume } from '../shared/defaults.ts'
 
 /** Sites mutate constantly; rescanning on every mutation is what makes an
  *  extension show up in a page's performance trace. */
 const SCAN_DEBOUNCE_MS = 250
+
+/** How long the on-screen value stays up after a shortcut. */
+const ANNOUNCE_MS = 1100
+
+/**
+ * Chrome's key names as they appear in a shortcut string, mapped to
+ * KeyboardEvent.code.
+ *
+ * Two details worth keeping. Matching on `code` rather than `key` sidesteps
+ * keyboard layouts and the way modifiers rewrite the character. And the names
+ * are the browser's *display* spellings, which are not what the manifest asked
+ * for: a manifest "Up" comes back from chrome.commands.getAll() as
+ * "Up Arrow". Spaces are stripped before the lookup for that reason.
+ */
+function codeFor(name: string): string {
+  const compact = name.replace(/\s+/g, '')
+  const named: Record<string, string> = {
+    Up: 'ArrowUp',
+    UpArrow: 'ArrowUp',
+    ArrowUp: 'ArrowUp',
+    Down: 'ArrowDown',
+    DownArrow: 'ArrowDown',
+    ArrowDown: 'ArrowDown',
+    Left: 'ArrowLeft',
+    LeftArrow: 'ArrowLeft',
+    ArrowLeft: 'ArrowLeft',
+    Right: 'ArrowRight',
+    RightArrow: 'ArrowRight',
+    ArrowRight: 'ArrowRight',
+    Space: 'Space',
+    Comma: 'Comma',
+    Period: 'Period',
+    Home: 'Home',
+    End: 'End',
+    PageUp: 'PageUp',
+    PageDown: 'PageDown',
+    Insert: 'Insert',
+    Delete: 'Delete',
+  }
+  if (named[compact]) return named[compact]
+  if (/^[A-Za-z]$/.test(compact)) return `Key${compact.toUpperCase()}`
+  if (/^[0-9]$/.test(compact)) return `Digit${compact}`
+  return compact
+}
+
+interface ParsedBinding {
+  command: CommandName
+  code: string
+  ctrl: boolean
+  alt: boolean
+  shift: boolean
+  meta: boolean
+}
+
+function parseBinding({ command, shortcut }: Binding): ParsedBinding | null {
+  const parts = shortcut.split('+').map((p) => p.trim())
+  const key = parts.pop()
+  if (!key) return null
+  const lower = parts.map((p) => p.toLowerCase())
+  return {
+    command,
+    code: codeFor(key),
+    ctrl: lower.includes('ctrl'),
+    alt: lower.includes('alt'),
+    shift: lower.includes('shift'),
+    meta: lower.includes('command') || lower.includes('meta'),
+  }
+}
+
+function matches(event: KeyboardEvent, binding: ParsedBinding): boolean {
+  return (
+    event.code === binding.code &&
+    event.altKey === binding.alt &&
+    event.shiftKey === binding.shift &&
+    event.metaKey === binding.meta &&
+    event.ctrlKey === binding.ctrl
+  )
+}
 
 // Frames would each build their own graph; only the top document does.
 if (window.top === window.self) {
@@ -33,6 +112,9 @@ function start(): void {
   let audio: AudioState = { volume: 1, muted: false }
   let debounce: ReturnType<typeof setTimeout> | null = null
   let cached: HTMLMediaElement[] = []
+  let parsed: ParsedBinding[] = []
+  let toast: HTMLElement | null = null
+  let toastTimer: ReturnType<typeof setTimeout> | null = null
   const routed = new WeakMap<HTMLMediaElement, MediaElementAudioSourceNode>()
   const refused = new WeakSet<HTMLMediaElement>()
 
@@ -112,14 +194,98 @@ function start(): void {
     true,
   )
 
+  /**
+   * Shows the value on screen.
+   *
+   * Appended to the fullscreen element when there is one: a fullscreen element
+   * is promoted to the browser's top layer, where nothing outside it renders at
+   * all — no z-index reaches past it.
+   */
+  function announce(global: boolean): void {
+    const host = document.fullscreenElement ?? document.body
+    if (!host) return
+
+    if (!toast) {
+      toast = document.createElement('div')
+      toast.style.cssText = [
+        'all: initial',
+        'position: fixed',
+        'left: 50%',
+        'top: 8%',
+        'transform: translateX(-50%)',
+        'z-index: 2147483647',
+        'padding: 14px 22px',
+        'border-radius: 14px',
+        'background: rgba(10, 14, 18, 0.82)',
+        'backdrop-filter: blur(12px)',
+        '-webkit-backdrop-filter: blur(12px)',
+        'color: #fff',
+        'font: 600 26px/1 ui-monospace, "SF Mono", Menlo, Consolas, monospace',
+        'font-variant-numeric: tabular-nums',
+        'letter-spacing: -0.01em',
+        'text-align: center',
+        'pointer-events: none',
+        'transition: opacity 180ms ease',
+      ].join(';')
+    }
+    if (toast.parentElement !== host) host.append(toast)
+
+    const label = audio.muted ? 'Muted' : formatVolume(audio.volume)
+    toast.textContent = global ? `${label}  ·  all sites` : label
+    toast.style.opacity = '1'
+
+    if (toastTimer) clearTimeout(toastTimer)
+    toastTimer = setTimeout(() => {
+      if (toast) toast.style.opacity = '0'
+      toastTimer = setTimeout(() => toast?.remove(), 220)
+    }, ANNOUNCE_MS)
+  }
+
+  /**
+   * The fullscreen fallback.
+   *
+   * The browser restricts keyboard input while a page is fullscreen, so
+   * chrome.commands stops firing — and the toolbar is hidden, so the popup is
+   * unreachable too. The page still receives key events, so it forwards them.
+   *
+   * Scoped to fullscreen deliberately: outside it chrome.commands works, and
+   * handling the keys here as well would apply every press twice.
+   */
+  window.addEventListener(
+    'keydown',
+    (event) => {
+      if (!document.fullscreenElement || event.repeat) return
+      const binding = parsed.find((b) => matches(event, b))
+      if (!binding) return
+      event.preventDefault()
+      event.stopPropagation()
+      void chrome.runtime
+        .sendMessage({ type: 'content:command', command: binding.command } satisfies ContentReport)
+        .catch(() => undefined)
+    },
+    true,
+  )
+
   chrome.runtime.onMessage.addListener((message: ContentCommand, _sender, sendResponse) => {
     if (message?.type === 'content:apply' && message.audio) {
       audio = message.audio
       applyGain()
       // Newly arrived elements are picked up the moment a value is pushed.
       scan()
+      if (message.announce) announce(message.global === true)
     }
-    sendResponse({ ok: true, media: cached.length, audio, routed: gain !== null })
+    if (message?.type === 'content:bindings') {
+      parsed = message.bindings
+        .map(parseBinding)
+        .filter((b): b is ParsedBinding => b !== null)
+    }
+    sendResponse({
+      ok: true,
+      media: cached.length,
+      audio,
+      routed: gain !== null,
+      bindings: parsed.length,
+    })
     return false
   })
 

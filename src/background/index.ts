@@ -6,7 +6,10 @@
  * state: it sends intents and renders what it gets back.
  */
 import {
+  type Binding,
+  type CommandName,
   type ContentCommand,
+  type PopupBroadcast,
   type PopupRequest,
   type PopupResponse,
   type Scope,
@@ -39,37 +42,53 @@ function persist(): void {
   }, WRITE_DEBOUNCE_MS)
 }
 
-async function send(tabId: number, audio: ReturnType<typeof defaultAudio>): Promise<void> {
+async function send(tabId: number, command: ContentCommand): Promise<void> {
   try {
-    await chrome.tabs.sendMessage(tabId, { type: 'content:apply', audio } satisfies ContentCommand)
+    await chrome.tabs.sendMessage(tabId, command)
   } catch {
     // No content script there (an unsupported page, or one still loading).
   }
 }
 
-/** Pushes one tab the value its origin resolves to. */
-async function pushTab(tabId: number, url: string | undefined): Promise<void> {
+/**
+ * Pushes one tab the value its origin resolves to.
+ *
+ * `announce` asks the page to show the value on screen. Set for changes that
+ * came from a shortcut, because in fullscreen there is no popup to read.
+ */
+async function pushTab(tabId: number, url: string | undefined, announce = false): Promise<void> {
   const origin = originOf(url)
   if (!origin || !settings) return
-  await send(tabId, resolveAudio(settings, origin))
+  await send(tabId, {
+    type: 'content:apply',
+    audio: resolveAudio(settings, origin),
+    announce,
+    global: settings.globalOn,
+  })
 }
 
 /**
  * Pushes every tab. Used when the global switch moves, since that changes what
  * every page should be playing at once.
  */
-async function pushAll(): Promise<void> {
+async function pushAll(announce = false): Promise<void> {
   const tabs = await chrome.tabs.query({})
-  await Promise.all(tabs.map((tab) => (tab.id === undefined ? undefined : pushTab(tab.id, tab.url))))
+  const active = announce ? (await activeTab())?.id : undefined
+  await Promise.all(
+    tabs.map((tab) =>
+      tab.id === undefined ? undefined : pushTab(tab.id, tab.url, tab.id === active),
+    ),
+  )
 }
 
 /** Pushes every tab sharing one origin, so two YouTube tabs stay in step. */
-async function pushOrigin(origin: string): Promise<void> {
+async function pushOrigin(origin: string, announce = false): Promise<void> {
   const tabs = await chrome.tabs.query({})
+  const active = announce ? (await activeTab())?.id : undefined
   await Promise.all(
     tabs
       .filter((tab) => tab.id !== undefined && originOf(tab.url) === origin)
-      .map((tab) => pushTab(tab.id!, tab.url)),
+      .map((tab) => pushTab(tab.id!, tab.url, tab.id === active)),
   )
 }
 
@@ -101,12 +120,75 @@ async function popupState(): Promise<PopupState> {
 }
 
 /** Applies a change to the right scope and pushes it where it belongs. */
-async function apply(scope: Scope, origin: string, patch: Parameters<typeof writeScope>[3]): Promise<void> {
+async function apply(
+  scope: Scope,
+  origin: string,
+  patch: Parameters<typeof writeScope>[3],
+  announce = false,
+): Promise<void> {
   const current = await load()
   writeScope(current, scope, origin, patch)
   persist()
-  if (scope === 'global') await pushAll()
-  else await pushOrigin(origin)
+  if (scope === 'global') await pushAll(announce)
+  else await pushOrigin(origin, announce)
+  await notifyPopup()
+}
+
+/**
+ * Tells an open popup that something changed underneath it — a shortcut, or
+ * another window. Without this the popup shows whatever it read when it opened.
+ */
+async function notifyPopup(): Promise<void> {
+  try {
+    await chrome.runtime.sendMessage({
+      type: 'popup:changed',
+      state: await popupState(),
+    } satisfies PopupBroadcast)
+  } catch {
+    // No popup open. That is the normal case.
+  }
+}
+
+/**
+ * Runs a shortcut. Shared by chrome.commands and by the in-page fallback the
+ * content script uses in fullscreen, so both behave identically.
+ */
+async function runCommand(command: CommandName): Promise<void> {
+  const current = await load()
+  const tab = await activeTab()
+  const origin = originOf(tab?.url)
+  const scope = scopeFor(current)
+  if (scope === 'site' && !origin) return
+
+  switch (command) {
+    case 'volume-up':
+      await apply(scope, origin, nudge(readScope(current, scope, origin), 1), true)
+      break
+    case 'volume-down':
+      await apply(scope, origin, nudge(readScope(current, scope, origin), -1), true)
+      break
+    case 'toggle-mute': {
+      const now = readScope(current, scope, origin)
+      await apply(scope, origin, { muted: !now.muted }, true)
+      break
+    }
+    case 'toggle-global':
+      current.globalOn = !current.globalOn
+      persist()
+      await pushAll(true)
+      await notifyPopup()
+      break
+  }
+}
+
+/** The shortcuts as the browser currently has them, defaults or rebound. */
+async function bindings(): Promise<Binding[]> {
+  const commands = await chrome.commands.getAll()
+  return commands
+    .filter((c): c is chrome.commands.Command & { name: string; shortcut: string } =>
+      Boolean(c.name && c.shortcut),
+    )
+    .map((c) => ({ command: c.name as CommandName, shortcut: c.shortcut }))
 }
 
 async function handle(request: PopupRequest): Promise<PopupResponse> {
@@ -157,7 +239,20 @@ chrome.runtime.onMessage.addListener((message: ToBackground, sender, sendRespons
   // freshly loaded or navigated tab configures itself.
   if (message?.type === 'content:ready') {
     const tabId = sender.tab?.id
-    if (tabId !== undefined) void load().then(() => pushTab(tabId, sender.tab?.url))
+    if (tabId !== undefined) {
+      void load().then(async () => {
+        await pushTab(tabId, sender.tab?.url)
+        // Hand the page the live bindings so its fullscreen fallback matches
+        // whatever the user actually has configured.
+        await send(tabId, { type: 'content:bindings', bindings: await bindings() })
+      })
+    }
+    sendResponse({ ok: true })
+    return false
+  }
+
+  if (message?.type === 'content:command') {
+    void runCommand(message.command)
     sendResponse({ ok: true })
     return false
   }
@@ -175,32 +270,7 @@ chrome.runtime.onMessage.addListener((message: ToBackground, sender, sendRespons
  * These are exactly the four this extension has.
  */
 chrome.commands.onCommand.addListener((command) => {
-  void (async () => {
-    const current = await load()
-    const tab = await activeTab()
-    const origin = originOf(tab?.url)
-    const scope = scopeFor(current)
-    if (scope === 'site' && !origin) return
-
-    switch (command) {
-      case 'volume-up':
-        await apply(scope, origin, nudge(readScope(current, scope, origin), 1))
-        break
-      case 'volume-down':
-        await apply(scope, origin, nudge(readScope(current, scope, origin), -1))
-        break
-      case 'toggle-mute': {
-        const now = readScope(current, scope, origin)
-        await apply(scope, origin, { muted: !now.muted })
-        break
-      }
-      case 'toggle-global':
-        current.globalOn = !current.globalOn
-        persist()
-        await pushAll()
-        break
-    }
-  })()
+  void runCommand(command as CommandName)
 })
 
 // A navigation replaces the page's media elements, so the value must be resent.

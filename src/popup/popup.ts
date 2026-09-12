@@ -14,7 +14,7 @@
  */
 import { formatVolume } from '../shared/defaults.ts'
 import { prettyOrigin } from '../shared/origin.ts'
-import type { PopupRequest, PopupResponse, Scope } from '../shared/messages.ts'
+import type { PopupBroadcast, PopupRequest, PopupResponse, Scope } from '../shared/messages.ts'
 import { MAX_VOLUME, type AudioState, type PopupState } from '../shared/types.ts'
 
 const STYLES = `
@@ -262,6 +262,9 @@ function mount(): void {
 
   function render(next: PopupState): void {
     state = next
+    // Mid-drag the pointer is authoritative; a broadcast would snap the knob
+    // back to the last value the worker happened to have written.
+    if (dragging) return
     const global = next.settings.globalOn
     const audio = current()
     // The site controls are unusable on a page no content script can reach,
@@ -301,6 +304,21 @@ function mount(): void {
           ? 'Switch to All sites to set a volume from here.'
           : ''
   }
+
+  // A shortcut, or another window, can change the value while this popup is
+  // open. Without this it would sit on whatever it read when it opened.
+  chrome.runtime.onMessage.addListener((message: PopupBroadcast) => {
+    if (message?.type === 'popup:changed') render(message.state)
+  })
+
+  // Belt and braces: the broadcast can be missed if the popup opens mid-flight,
+  // and storage is the thing that is actually authoritative.
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== 'local' || !changes['audio-punch:settings']) return
+    void send({ type: 'popup:hello' }).then((response) => {
+      if (response.ok) render(response.state)
+    })
+  })
 
   void send({ type: 'popup:hello' }).then((response) => {
     if (response.ok) render(response.state)

@@ -24,7 +24,10 @@ const WAV =
   'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA='
 const server = createServer((_q, r) => {
   r.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
-  r.end(`<!doctype html><title>Audio Punch smoke</title><audio controls src="${WAV}"></audio>`)
+  r.end(`<!doctype html><title>Audio Punch smoke</title>
+  <video id="v" controls src="${WAV}" style="width:480px;height:270px;background:#222"></video>
+  <button id="fs">fullscreen</button>
+  <script>document.getElementById('fs').onclick=()=>document.getElementById('v').requestFullscreen()</script>`)
 })
 await new Promise((r) => server.listen(0, '127.0.0.1', r))
 const base = `http://127.0.0.1:${server.address().port}/`
@@ -126,6 +129,53 @@ try {
     applied?.audio?.volume === 2.6,
     `${applied?.audio?.volume}`,
   )
+
+  // ── fullscreen ────────────────────────────────────────────────────────
+  // The browser restricts keyboard input in fullscreen, so chrome.commands
+  // stops firing and the toolbar (and so the popup) is hidden. The content
+  // script listens itself there. This is the only end-to-end cover the
+  // shortcut path has, since chrome.commands cannot be fired from here.
+  await ask({ type: 'popup:set-volume', scope: 'site', volume: 1 })
+  await page.bringToFront()
+  await page.click('#fs')
+  await page.waitForTimeout(500)
+  check('the page goes fullscreen', await page.evaluate(() => !!document.fullscreenElement))
+
+  const bindingCount = (await pageState())?.bindings
+  check('the page received the live shortcut bindings', bindingCount === 4, `${bindingCount}`)
+
+  await page.keyboard.press('Alt+Shift+ArrowUp')
+  await page.waitForTimeout(350)
+  applied = await pageState()
+  check('volume up works in fullscreen', applied?.audio?.volume === 1.1, `${applied?.audio?.volume}`)
+
+  await page.keyboard.press('Alt+Shift+ArrowDown')
+  await page.keyboard.press('Alt+Shift+ArrowDown')
+  await page.waitForTimeout(400)
+  applied = await pageState()
+  check('volume down works in fullscreen', applied?.audio?.volume === 0.9, `${applied?.audio?.volume}`)
+
+  await page.keyboard.press('Alt+Shift+M')
+  await page.waitForTimeout(350)
+  applied = await pageState()
+  check('mute works in fullscreen', applied?.audio?.muted === true)
+
+  // The value must be shown inside the fullscreen element: a fullscreen element
+  // is promoted to the top layer, where nothing outside it renders.
+  const announced = await page.evaluate(() => {
+    const fs = document.fullscreenElement
+    if (!fs) return null
+    const toast = [...fs.children].find((el) => el.textContent?.trim())
+    return toast ? toast.textContent.trim() : null
+  })
+  check('the value is shown inside the fullscreen element', announced === 'Muted', String(announced))
+
+  await page.keyboard.press('Alt+Shift+M')
+  await page.waitForTimeout(300)
+  check('unmute works in fullscreen', (await pageState())?.audio?.muted === false)
+
+  await page.evaluate(() => document.exitFullscreen())
+  await page.waitForTimeout(300)
 
   // ── manifest shape ────────────────────────────────────────────────────
   const manifest = await popup.evaluate(() => chrome.runtime.getManifest())
