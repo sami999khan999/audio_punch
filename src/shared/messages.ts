@@ -49,7 +49,12 @@ export type ContentCommand =
 
 /** Content script -> service worker. */
 export type ContentReport =
-  | { type: 'content:ready'; hasMedia: boolean }
+  | {
+      type: 'content:ready'
+      hasMedia: boolean
+      /** True when some element cannot be boosted past 100% — see PopupState. */
+      capped: boolean
+    }
   /**
    * A shortcut caught by the page.
    *

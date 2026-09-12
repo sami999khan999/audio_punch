@@ -40,4 +40,13 @@ export interface PopupState {
   title: string
   /** False on pages no content script can run in. */
   supported: boolean
+  /**
+   * True when the page has media that cannot be boosted past 100%.
+   *
+   * Boost needs a Web Audio gain node, and media the page fetched cross-origin
+   * without CORS headers cannot be routed through one — doing so yields
+   * permanent silence. Those elements are driven through their own volume
+   * property instead, which stops at 100%.
+   */
+  boostCapped: boolean
 }

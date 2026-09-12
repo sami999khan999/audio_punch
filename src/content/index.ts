@@ -23,6 +23,9 @@ const SCAN_DEBOUNCE_MS = 250
 /** How long the on-screen value stays up after a shortcut. */
 const ANNOUNCE_MS = 1100
 
+/** How often the expensive shadow-root walk may run. */
+const DEEP_SCAN_INTERVAL_MS = 2000
+
 /**
  * Chrome's key names as they appear in a shortcut string, mapped to
  * KeyboardEvent.code.
@@ -98,10 +101,14 @@ function matches(event: KeyboardEvent, binding: ParsedBinding): boolean {
   )
 }
 
-// Frames would each build their own graph; only the top document does.
-if (window.top === window.self) {
-  start()
-}
+/**
+ * Runs in every frame, not just the top document.
+ *
+ * Plenty of sites put their player in an iframe — embeds, and anything built on
+ * a third-party player. A top-frame-only script simply never sees those, which
+ * is why this worked on YouTube (a top-level <video>) and not elsewhere.
+ */
+start()
 
 function start(): void {
   // Declared before anything that could read them: the observer and the
@@ -113,6 +120,13 @@ function start(): void {
   let debounce: ReturnType<typeof setTimeout> | null = null
   let cached: HTMLMediaElement[] = []
   let parsed: ParsedBinding[] = []
+  let deepDue = 0
+  /** Elements found behind a shadow root, kept between deep walks. */
+  let shadowed: HTMLMediaElement[] = []
+  /** Elements whose volume/mute we have written, so we only undo our own. */
+  const ourVolume = new WeakSet<HTMLMediaElement>()
+  const ourMute = new WeakSet<HTMLMediaElement>()
+  let lastCapped: boolean | null = null
   let toast: HTMLElement | null = null
   let toastTimer: ReturnType<typeof setTimeout> | null = null
   const routed = new WeakMap<HTMLMediaElement, MediaElementAudioSourceNode>()
@@ -141,6 +155,38 @@ function start(): void {
     gain.gain.setTargetAtTime(target, ctx.currentTime, 0.015)
   }
 
+  /**
+   * Whether routing this element through Web Audio is safe.
+   *
+   * `createMediaElementSource` on media the page fetched cross-origin without
+   * CORS headers does not throw — it yields **silence**, permanently, because
+   * routing cannot be undone. That is far worse than the volume simply not
+   * applying, so anything not demonstrably same-origin is driven through the
+   * element's own volume instead.
+   *
+   * A blob: or data: source is same-origin by construction, which is what
+   * media-source players (YouTube among them) produce.
+   */
+  function safeToRoute(element: HTMLMediaElement): boolean {
+    const src = element.currentSrc || element.src
+    if (!src) return false
+    if (src.startsWith('blob:') || src.startsWith('data:')) return true
+    if (element.crossOrigin !== null) return true
+    try {
+      return new URL(src, location.href).origin === location.origin
+    } catch {
+      return false
+    }
+  }
+
+  /** Routes an element if that is safe, otherwise leaves it to direct control. */
+  function adopt(element: HTMLMediaElement): void {
+    if (routed.has(element) || refused.has(element)) return
+    if (safeToRoute(element)) hook(element)
+    // A source can arrive after the element does, so re-decide when it loads.
+    element.addEventListener('loadeddata', () => adopt(element), { passive: true })
+  }
+
   function hook(element: HTMLMediaElement): void {
     if (routed.has(element) || refused.has(element)) return
     const node = ensureGain()
@@ -158,19 +204,108 @@ function start(): void {
     }
     routed.set(element, source)
     source.connect(node)
+    // The gain node owns the level now; the element's own must be out of the way.
+    element.volume = 1
+    element.muted = false
 
     // The context starts suspended until a gesture; playing counts as one.
     element.addEventListener('play', resume, { passive: true })
     if (!element.paused) resume()
   }
 
+  /**
+   * Drives elements that are not routed.
+   *
+   * Their volume cannot exceed 100% — that is the element property's ceiling,
+   * and the whole reason routing exists — so boost is capped rather than
+   * silently ignored. The page is not fought over it: if the site's own control
+   * changes the volume afterwards, the site wins.
+   */
+  function applyToElements(): void {
+    for (const element of cached) {
+      if (routed.has(element)) continue
+      const level = Math.min(1, audio.volume)
+
+      // Only write when we are actually changing something, and only undo what
+      // we set. A site that muted its own player should stay muted when our
+      // state is simply "not muted".
+      if (level !== 1) {
+        element.volume = level
+        ourVolume.add(element)
+      } else if (ourVolume.has(element)) {
+        element.volume = 1
+        ourVolume.delete(element)
+      }
+
+      if (audio.muted) {
+        element.muted = true
+        ourMute.add(element)
+      } else if (ourMute.has(element)) {
+        element.muted = false
+        ourMute.delete(element)
+      }
+    }
+    reportCapped()
+  }
+
+  /**
+   * Boost above 100% needs the gain node, and an element we dare not route
+   * cannot have it. Tell the worker, so the popup can say so rather than
+   * leaving the user to wonder why 300% sounds like 100%.
+   */
+  function reportCapped(): void {
+    const capped = cached.length > 0 && cached.some((el) => !routed.has(el))
+    if (capped === lastCapped) return
+    lastCapped = capped
+    void chrome.runtime
+      .sendMessage({ type: 'content:ready', hasMedia: cached.length > 0, capped } satisfies ContentReport)
+      .catch(() => undefined)
+  }
+
   function resume(): void {
     if (ctx?.state === 'suspended') void ctx.resume().catch(() => undefined)
   }
 
+  /**
+   * Finds media elements, including inside open shadow roots.
+   *
+   * The plain query is answered from the browser's selector index and runs
+   * every time. The shadow walk visits every element on the page and is far
+   * more expensive, so it is rate-limited rather than skipped — an earlier
+   * version only walked when the plain query found nothing, which meant a page
+   * with one ordinary video and one inside a custom element never had the
+   * second one found.
+   */
+  function collect(): HTMLMediaElement[] {
+    const found = Array.from(document.querySelectorAll<HTMLMediaElement>('audio, video'))
+
+    const now = Date.now()
+    if (now >= deepDue) {
+      deepDue = now + DEEP_SCAN_INTERVAL_MS
+      const walk = (root: ParentNode): void => {
+        for (const node of root.querySelectorAll<HTMLElement>('*')) {
+          if (node instanceof HTMLMediaElement) {
+            if (!found.includes(node)) found.push(node)
+          } else if (node.shadowRoot) {
+            walk(node.shadowRoot)
+          }
+        }
+      }
+      walk(document)
+      shadowed = found.filter((el) => el.getRootNode() !== document)
+    } else {
+      // Between walks, keep the ones already discovered behind a shadow root.
+      for (const el of shadowed) {
+        if (el.isConnected && !found.includes(el)) found.push(el)
+      }
+    }
+    return found
+  }
+
   function scan(): void {
-    cached = Array.from(document.querySelectorAll<HTMLMediaElement>('audio, video'))
-    for (const element of cached) hook(element)
+    cached = collect()
+    for (const element of cached) adopt(element)
+    applyToElements()
   }
 
   function scheduleScan(): void {
@@ -193,6 +328,21 @@ function start(): void {
     },
     true,
   )
+
+  /**
+   * Which frame speaks for the tab.
+   *
+   * With the script in every frame, a naive check would have the top document
+   * and the player's iframe both announce and both forward the same keypress.
+   * When an iframe is fullscreen the *top* document's fullscreenElement is the
+   * <iframe> itself, so "has a fullscreen element that is not an iframe" picks
+   * out exactly one frame; otherwise the top frame speaks.
+   */
+  function announcingFrame(): boolean {
+    const fs = document.fullscreenElement
+    if (fs) return !(fs instanceof HTMLIFrameElement)
+    return window.top === window.self
+  }
 
   /**
    * Shows the value on screen.
@@ -255,6 +405,9 @@ function start(): void {
     'keydown',
     (event) => {
       if (!document.fullscreenElement || event.repeat) return
+      // Only the frame holding the fullscreen content forwards, or an iframe
+      // player would have every press counted twice.
+      if (document.fullscreenElement instanceof HTMLIFrameElement) return
       const binding = parsed.find((b) => matches(event, b))
       if (!binding) return
       event.preventDefault()
@@ -272,7 +425,7 @@ function start(): void {
       applyGain()
       // Newly arrived elements are picked up the moment a value is pushed.
       scan()
-      if (message.announce) announce(message.global === true)
+      if (message.announce && announcingFrame()) announce(message.global === true)
     }
     if (message?.type === 'content:bindings') {
       parsed = message.bindings
@@ -293,6 +446,10 @@ function start(): void {
 
   // Announce, and take back whatever this origin is set to.
   void chrome.runtime
-    .sendMessage({ type: 'content:ready', hasMedia: cached.length > 0 } satisfies ContentReport)
+    .sendMessage({
+      type: 'content:ready',
+      hasMedia: cached.length > 0,
+      capped: cached.some((el) => !routed.has(el)),
+    } satisfies ContentReport)
     .catch(() => undefined)
 }

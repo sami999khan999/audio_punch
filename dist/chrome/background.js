@@ -39,6 +39,7 @@ const STORAGE_KEY = "audio-punch:settings";
 const WRITE_DEBOUNCE_MS = 250;
 let settings = null;
 let writeTimer = null;
+const cappedTabs = /* @__PURE__ */ new Set();
 async function load() {
   if (settings) return settings;
   const bag = await chrome.storage.local.get(STORAGE_KEY);
@@ -98,7 +99,8 @@ async function popupState() {
     settings: current,
     origin,
     title: tab?.title ?? "",
-    supported: origin !== ""
+    supported: origin !== "",
+    boostCapped: tab?.id !== void 0 && cappedTabs.has(tab.id)
   };
 }
 async function apply(scope, origin, patch, announce = false) {
@@ -187,6 +189,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === "content:ready") {
     const tabId = sender.tab?.id;
     if (tabId !== void 0) {
+      if (message.capped) cappedTabs.add(tabId);
+      else cappedTabs.delete(tabId);
+      void notifyPopup();
       void load().then(async () => {
         await pushTab(tabId, sender.tab?.url);
         await send(tabId, { type: "content:bindings", bindings: await bindings() });
@@ -208,7 +213,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 chrome.commands.onCommand.addListener((command) => {
   void runCommand(command);
 });
+chrome.tabs.onRemoved.addListener((tabId) => cappedTabs.delete(tabId));
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.url) cappedTabs.delete(tabId);
   if (changeInfo.status !== "complete" && !changeInfo.url) return;
   void load().then(() => pushTab(tabId, changeInfo.url ?? tab.url));
 });

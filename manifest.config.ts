@@ -54,7 +54,10 @@ export function makeManifest(target: Target): Record<string, unknown> {
         matches: ['http://*/*', 'https://*/*'],
         js: ['content.js'],
         run_at: 'document_idle',
-        all_frames: false,
+        // Players are routinely inside an iframe; a top-frame-only script
+        // never sees them.
+        all_frames: true,
+        match_about_blank: true,
       },
     ],
     commands: COMMANDS,

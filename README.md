@@ -82,14 +82,38 @@ at all — no z-index reaches past it.
 
 ---
 
+## How it reaches a page's audio
+
+Two paths, chosen per element, because no single one works everywhere:
+
+**Routed** — the element is fed through a Web Audio gain node. This is the good
+path: it does not touch the element's own volume, so it never fights the site's
+player controls, and it is the only way past 100%. Used when the media is
+demonstrably same-origin, which includes the `blob:` sources that media-source
+players (YouTube among them) produce.
+
+**Direct** — the element's own `volume` and `muted` are set instead. Used for
+everything else, and capped at 100% because that is the property's ceiling. The
+popup says so rather than leaving a 300% setting sounding like 100%.
+
+The split exists because `createMediaElementSource` on media fetched
+cross-origin without CORS headers does not throw — it yields **silence**,
+permanently, since routing cannot be undone. Driving those elements directly is
+worse in one way and far better in another.
+
+On the direct path the site is not fought over: a volume or mute the *site* set
+is left alone, and only values this extension wrote are ever undone.
+
+Players are found in the top document, inside iframes, and inside open shadow
+roots. The shadow walk is rate-limited rather than run on every scan — it visits
+every element on the page.
+
 ## Limits worth knowing
 
+- **Boost past 100% needs the routed path.** On cross-origin media the volume
+  stops at 100%, and the popup explains why.
 - **Sites that generate audio entirely through Web Audio are silent to it** —
-  browser games, some players. There is no `<audio>` or `<video>` element to
-  route.
-- **Cross-origin media served without CORS headers routes as silence.** Nothing
-  throws; the page just goes quiet. Rare, but it is the one failure mode that
-  looks like a bug rather than a limitation.
+  browser games, some players. There is no `<audio>` or `<video>` element at all.
 - **Nothing works on `chrome://` pages, the Web Store, or the PDF viewer** — no
   content script can run there. The popup says so and offers the global control
   instead.
@@ -115,7 +139,7 @@ popup                                   the only interface
 |---|---|
 | `src/shared/` | Types, defaults and clamping, origin identity, the message protocol |
 | `src/background/` | Settings, volume resolution, shortcut handling |
-| `src/content/` | The gain node and media-element routing |
+| `src/content/` | The gain node, media-element routing, and the fullscreen fallback |
 | `src/popup/` | The popup |
 
 Two details worth knowing before editing:
@@ -159,6 +183,11 @@ content script loads without throwing and routes the page's media element, the
 popup renders and drives it, a per-site volume reaches the page and is stored
 against the right origin, global overrides it, and turning global off restores
 it.
+
+It runs against a fixture carrying the four shapes real sites use — a top-level
+same-origin player, a cross-origin one, one inside a shadow root and one inside
+an iframe — and asserts each is reached by the right path. Those three beyond
+the first are what made this work on YouTube and nowhere else.
 
 It also drives the real shortcuts against a fullscreen video, which is the one
 end-to-end cover the shortcut path has: `chrome.commands` itself cannot be fired

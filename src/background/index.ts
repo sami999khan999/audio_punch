@@ -25,6 +25,8 @@ const WRITE_DEBOUNCE_MS = 250
 
 let settings: Settings | null = null
 let writeTimer: ReturnType<typeof setTimeout> | null = null
+/** Tabs reporting media that cannot be boosted past 100%. */
+const cappedTabs = new Set<number>()
 
 async function load(): Promise<Settings> {
   if (settings) return settings
@@ -116,6 +118,7 @@ async function popupState(): Promise<PopupState> {
     origin,
     title: tab?.title ?? '',
     supported: origin !== '',
+    boostCapped: tab?.id !== undefined && cappedTabs.has(tab.id),
   }
 }
 
@@ -240,6 +243,9 @@ chrome.runtime.onMessage.addListener((message: ToBackground, sender, sendRespons
   if (message?.type === 'content:ready') {
     const tabId = sender.tab?.id
     if (tabId !== undefined) {
+      if (message.capped) cappedTabs.add(tabId)
+      else cappedTabs.delete(tabId)
+      void notifyPopup()
       void load().then(async () => {
         await pushTab(tabId, sender.tab?.url)
         // Hand the page the live bindings so its fullscreen fallback matches
@@ -274,7 +280,10 @@ chrome.commands.onCommand.addListener((command) => {
 })
 
 // A navigation replaces the page's media elements, so the value must be resent.
+chrome.tabs.onRemoved.addListener((tabId) => cappedTabs.delete(tabId))
+
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.url) cappedTabs.delete(tabId)
   if (changeInfo.status !== 'complete' && !changeInfo.url) return
   void load().then(() => pushTab(tabId, changeInfo.url ?? tab.url))
 })

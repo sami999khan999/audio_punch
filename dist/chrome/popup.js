@@ -233,7 +233,7 @@ function mount() {
     for (const control of [minus, plus, muteBtn, resetBtn]) control.disabled = blocked;
     track.style.opacity = blocked ? "0.35" : "1";
     track.style.pointerEvents = blocked ? "none" : "auto";
-    note.textContent = audio.volume > 1 && !audio.muted ? "Boosting past 100%. Loud sources may distort." : blocked ? "Switch to All sites to set a volume from here." : "";
+    note.textContent = blocked ? "Switch to All sites to set a volume from here." : next.boostCapped && audio.volume > 1 ? "This page's audio is served from another site without CORS, so it cannot go past 100%." : audio.volume > 1 && !audio.muted ? "Boosting past 100%. Loud sources may distort." : "";
   }
   chrome.runtime.onMessage.addListener((message) => {
     if (message?.type === "popup:changed") render(message.state);
