@@ -22,6 +22,9 @@ adapter; see [Firefox](#firefox-and-safari) below.
 - **Templates.** Save the modules you have engaged under a name, apply it to
   global or to one site, and remove it to get back precisely what was there
   before. Eight are built in.
+- **Metering.** A signal meter on every source card so you can see which tab is
+  making noise, and a gain-reduction readout on the compressor and limiter so
+  they can be set by eye rather than by guess.
 - **Keyboard first.** Four browser-level shortcuts, plus a full rebindable map
   inside the mixer.
 

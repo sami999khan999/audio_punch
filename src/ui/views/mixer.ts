@@ -288,7 +288,7 @@ export function createMixer(options: MixerOptions): MixerHandle {
       master.setLevel(tabId === null ? 0 : (state.levels[tabId]?.peak ?? 0))
 
       if (rackTarget !== state.target) rebuildRack()
-      rack?.update(chain, state.eqBand)
+      rack?.update(chain, state.eqBand, tabId === null ? 0 : (state.levels[tabId]?.reduction ?? 0))
     },
   }
 }

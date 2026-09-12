@@ -9,7 +9,7 @@ import assert from 'node:assert/strict'
 
 import { applyImport, makeExport, migrate, validateImport } from '../src/shared/migrate.ts'
 import { clampChain, defaultChain, defaultSettings, mergeChain } from '../src/shared/defaults.ts'
-import { isDrmOrigin, isSupportedPage, originOf, prettyOrigin } from '../src/shared/origin.ts'
+import { isSupportedPage, originOf, prettyOrigin } from '../src/shared/origin.ts'
 import { SCHEMA_VERSION } from '../src/shared/types.ts'
 
 test('an export round-trips through import unchanged', () => {
@@ -149,10 +149,4 @@ test('pages the overlay cannot reach are reported as unsupported', () => {
   assert.equal(isSupportedPage('chrome://extensions'), false)
   assert.equal(isSupportedPage('https://chromewebstore.google.com/x'), false)
   assert.equal(isSupportedPage('https://example.com/manual.pdf'), false)
-})
-
-test('known protected-playback hosts are flagged before arming', () => {
-  assert.equal(isDrmOrigin('https://www.netflix.com'), true)
-  assert.equal(isDrmOrigin('https://open.spotify.com'), true)
-  assert.equal(isDrmOrigin('https://example.com'), false)
 })

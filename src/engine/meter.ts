@@ -36,6 +36,7 @@ export class Meter {
     return {
       peak: Math.min(1, this.heldPeak),
       rms: Math.min(1, Math.sqrt(sumSquares / this.buffer.length)),
+      reduction: 0,
     }
   }
 

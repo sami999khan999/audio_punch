@@ -416,6 +416,49 @@ export const STYLESHEET = `
   text-overflow: ellipsis;
 }
 .ap-tile-foot { display: flex; align-items: center; gap: 9px; }
+
+/* Signal meter along the bottom edge of a source card: present enough to tell
+   at a glance which tab is actually making noise, quiet enough not to compete
+   with the control above it. */
+.ap-tile-meter {
+  position: relative;
+  height: 3px;
+  border-radius: var(--ap-r-pill);
+  background: rgba(255, 255, 255, 0.1);
+  overflow: hidden;
+}
+.ap-tile-meter-fill {
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 0%;
+  border-radius: var(--ap-r-pill);
+  background: var(--ap-accent);
+  transition: width 90ms linear;
+}
+.ap-tile-meter-fill[data-hot="true"] { background: var(--ap-hot); }
+
+/* Gain-reduction readout on the dynamics cards. */
+.ap-reduction {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.ap-reduction-track {
+  position: relative;
+  flex: 1 1 auto;
+  height: 3px;
+  border-radius: var(--ap-r-pill);
+  background: rgba(255, 255, 255, 0.1);
+  overflow: hidden;
+}
+.ap-reduction-fill {
+  position: absolute;
+  right: 0; top: 0; bottom: 0;
+  width: 0%;
+  background: var(--ap-hot);
+  border-radius: var(--ap-r-pill);
+  transition: width 90ms linear;
+}
 .ap-tile-foot .ap-slider { flex: 1 1 auto; }
 .ap-tile-val { color: var(--ap-ink-2); min-width: 38px; text-align: right; }
 

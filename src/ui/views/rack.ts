@@ -19,7 +19,7 @@ export type PatchFn = (patch: Partial<ChainState>) => void
 
 export interface RackHandle {
   el: HTMLElement
-  update(chain: ChainState, eqBand: number): void
+  update(chain: ChainState, eqBand: number, reduction: number): void
   /** Which module group is on screen. */
   setGroup(title: string): void
   group(): string
@@ -112,6 +112,8 @@ export function createRack(options: RackOptions): RackHandle {
   let group = options.group
   let eq: EqHandle | null = null
   const patch = options.onPatch
+  /** Gain-reduction bars on the dynamics cards, keyed by module. */
+  const reductionBars = new Map<ModuleId, { fill: HTMLElement; value: HTMLElement }>()
 
   const tabs = el('div', { class: 'ap-tabs', role: 'tablist' })
   const modules = el('div', { class: 'ap-modules ap-scroll' })
@@ -162,6 +164,20 @@ export function createRack(options: RackOptions): RackHandle {
     } else {
       for (const [key, label] of MODULE_PARAMS[id] ?? []) body.push(slider(id, key, label))
       for (const [key, label] of MODULE_FLAGS[id] ?? []) body.push(flag(id, key, label))
+      // The compressor and limiter report how hard they are working. Without
+      // it, setting a threshold is guesswork.
+      if (id === 'comp' || id === 'limiter') {
+        const fill = el('div', { class: 'ap-reduction-fill' })
+        const value = el('span', { class: 'ap-num', style: 'min-width:44px;text-align:right' })
+        reductionBars.set(id, { fill, value })
+        body.push(
+          el('div', { class: 'ap-reduction' }, [
+            el('span', { class: 'ap-label', text: 'Reduction' }),
+            el('div', { class: 'ap-reduction-track' }, [fill]),
+            value,
+          ]),
+        )
+      }
     }
 
     // gain and pan are always on; the rest carry a switch.
@@ -264,8 +280,16 @@ export function createRack(options: RackOptions): RackHandle {
       renderGroup()
       renderTabs()
     },
-    update(nextChain, eqBand) {
+    update(nextChain, eqBand, reduction) {
       chain = nextChain
+
+      for (const [id, bar] of reductionBars) {
+        const active = (chain[id] as { on?: boolean }).on === true && !chain.bypass
+        // Reduction is reported at or below zero; 20 dB is full scale here.
+        const amount = active ? Math.min(20, Math.max(0, -reduction)) : 0
+        bar.fill.style.width = `${(amount / 20) * 100}%`
+        bar.value.textContent = amount < 0.1 ? '0.0 dB' : `-${amount.toFixed(1)} dB`
+      }
       for (const [, entry] of sliders) {
         entry.handle.set(readParam(chain, entry.module, entry.key))
       }

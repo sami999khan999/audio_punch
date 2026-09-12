@@ -157,7 +157,7 @@ export class PageGraph {
   }
 
   readMeter(): LevelReading {
-    return this.meter.read()
+    return { ...this.meter.read(), reduction: this.reduction() }
   }
 
   /** Gain reduction in dB from the compressor and limiter, for their meters. */

@@ -44,6 +44,8 @@ export function createSources(options: SourcesOptions): SourcesHandle {
   const levelSliders = new Map<string, SliderHandle>()
   /** Readouts beside each card's slider, updated in step with it. */
   const levelValues = new Map<string, HTMLElement>()
+  /** Signal meters, one per card, fed from the live level broadcast. */
+  const meters = new Map<number, HTMLElement>()
   let rendered = ''
 
   function card(opts: {
@@ -70,6 +72,9 @@ export function createSources(options: SourcesOptions): SourcesHandle {
     const value = el('span', { class: 'ap-num ap-tile-val' })
     value.textContent = `${Math.round(opts.chain.gain.level * 100)}%`
     levelValues.set(opts.key, value)
+
+    const meter = el('div', { class: 'ap-tile-meter-fill' })
+    if (opts.tabId !== null) meters.set(opts.tabId, meter)
 
     return el(
       'div',
@@ -100,6 +105,9 @@ export function createSources(options: SourcesOptions): SourcesHandle {
         ]),
         opts.tags.length > 0 ? el('div', { class: 'ap-wrap' }, opts.tags) : null,
         el('div', { class: 'ap-tile-foot' }, [slider.el, value]),
+        opts.tabId === null
+          ? null
+          : el('div', { class: 'ap-tile-meter', role: 'img', 'aria-label': 'Signal' }, [meter]),
       ],
     )
   }
@@ -108,6 +116,7 @@ export function createSources(options: SourcesOptions): SourcesHandle {
     for (const slider of levelSliders.values()) slider.destroy()
     levelSliders.clear()
     levelValues.clear()
+    meters.clear()
 
     const { settings, tabs } = state.snapshot
     const globalOn = settings.global.on
@@ -215,6 +224,17 @@ export function createSources(options: SourcesOptions): SourcesHandle {
         const following = settings.global.on && site?.ignoreGlobal !== true
         const chain = following ? settings.global.chain : (site?.chain ?? settings.global.chain)
         show(`tab:${tab.tabId}`, chain.gain.level)
+
+        // Metered on a dB scale: a linear meter spends most of its travel on
+        // levels nobody can hear.
+        const meter = meters.get(tab.tabId)
+        if (meter) {
+          const peak = state.levels[tab.tabId]?.peak ?? 0
+          const db = 20 * Math.log10(Math.max(peak, 1e-4))
+          const position = Math.max(0, Math.min(1, (db + 48) / 48))
+          meter.style.width = `${position * 100}%`
+          meter.setAttribute('data-hot', String(position > 0.92))
+        }
       }
     },
     destroy() {

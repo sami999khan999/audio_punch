@@ -271,6 +271,12 @@ export interface LevelReading {
   peak: number
   /** RMS amplitude 0..1 over the last frame. */
   rms: number
+  /**
+   * Gain reduction in dB from the compressor and limiter, at or below zero.
+   * The graph has always computed this; without it on screen a compressor is
+   * tuned blind.
+   */
+  reduction: number
 }
 
 /** The full picture every UI surface renders from. */
