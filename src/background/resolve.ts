@@ -1,55 +1,69 @@
 /**
- * Which chain a given site actually hears.
+ * Which volume a page actually plays at, and how a change is routed.
  *
- * This is the whole global-versus-per-site rule, kept pure and dependency-free
- * so it can be reasoned about and tested on its own:
+ * Kept pure and dependency-free so it can be reasoned about and tested on its
+ * own. The whole rule:
  *
- *   - Global off            -> the site's own chain.
- *   - Global on             -> the global chain.
- *   - Global on, site pinned
- *     to "ignore global"    -> the site's own chain.
- *
- * Per-site settings are never destroyed by turning global on; they are simply
- * not consulted, so switching global off restores every tab exactly.
+ *   - Global off -> the site's own setting.
+ *   - Global on  -> the global setting, and per-site values are left untouched
+ *                   so turning global off restores every tab exactly.
  */
-import { defaultChain, cloneChain } from '../shared/defaults.ts'
-import type { ChainState, Settings } from '../shared/types.ts'
+import { clampVolume, defaultAudio } from '../shared/defaults.ts'
+import { VOLUME_STEP, type AudioState, type Settings } from '../shared/types.ts'
+import type { Scope } from '../shared/messages.ts'
 
-export type ChainSource = 'global' | 'site' | 'default'
-
-export interface Resolution {
-  chain: ChainState
-  source: ChainSource
-}
-
-export function resolve(settings: Settings, origin: string): Resolution {
+export function resolveAudio(settings: Settings, origin: string): AudioState {
+  if (settings.globalOn) return { ...settings.global }
   const site = settings.sites[origin]
-  const globalWins = settings.global.on && !site?.ignoreGlobal
-
-  if (globalWins) {
-    return { chain: withMasters(settings, settings.global.chain), source: 'global' }
-  }
-  if (site) {
-    return { chain: withMasters(settings, site.chain), source: 'site' }
-  }
-  return { chain: withMasters(settings, defaultChain()), source: 'default' }
-}
-
-/** Convenience wrapper when only the chain is wanted. */
-export function resolveChain(settings: Settings, origin: string): ChainState {
-  return resolve(settings, origin).chain
+  return site ? { volume: site.volume, muted: site.muted } : defaultAudio()
 }
 
 /**
- * Folds the two latching browser commands over whatever chain was resolved.
- * They are deliberately not stored into any chain: releasing mute-all must
- * return every tab to its own mute state, not to "unmuted".
+ * The setting a control edits. With global on, the popup and the shortcuts act
+ * on the global value — adjusting a site you cannot hear would be a trap.
  */
-function withMasters(settings: Settings, chain: ChainState): ChainState {
-  if (!settings.muteAll && !settings.bypassAll) return cloneChain(chain)
-  const next = cloneChain(chain)
-  if (settings.bypassAll) next.bypass = true
-  if (settings.muteAll) next.gain.mute = true
-  return next
+export function scopeFor(settings: Settings): Scope {
+  return settings.globalOn ? 'global' : 'site'
 }
 
+export function readScope(settings: Settings, scope: Scope, origin: string): AudioState {
+  if (scope === 'global') return { ...settings.global }
+  const site = settings.sites[origin]
+  return site ? { volume: site.volume, muted: site.muted } : defaultAudio()
+}
+
+/** Applies a change in place and returns the new value. */
+export function writeScope(
+  settings: Settings,
+  scope: Scope,
+  origin: string,
+  patch: Partial<AudioState>,
+): AudioState {
+  if (scope === 'global') {
+    settings.global = {
+      volume: clampVolume(patch.volume ?? settings.global.volume),
+      muted: patch.muted ?? settings.global.muted,
+    }
+    return { ...settings.global }
+  }
+
+  const current = settings.sites[origin]
+  const next = {
+    origin,
+    volume: clampVolume(patch.volume ?? current?.volume ?? 1),
+    muted: patch.muted ?? current?.muted ?? false,
+    updatedAt: Date.now(),
+  }
+  settings.sites[origin] = next
+  return { volume: next.volume, muted: next.muted }
+}
+
+/**
+ * Nudging up from muted unmutes rather than raising a value nobody can hear —
+ * pressing volume-up and getting silence is the wrong answer.
+ */
+export function nudge(current: AudioState, steps: number): AudioState {
+  const volume = clampVolume(current.volume + steps * VOLUME_STEP)
+  if (steps > 0 && current.muted) return { volume, muted: false }
+  return { volume, muted: current.muted }
+}

@@ -1,186 +1,132 @@
 /**
- * Content script entry point.
+ * Content script: the audio engine for this page.
  *
- * Runs on every http(s) page and owns two things: the audio engine for this
- * page, and the mixer overlay. The engine starts only once a media element
- * actually exists, and the overlay is built only when first opened, so a page
- * that never plays anything pays almost nothing.
+ * Every `<audio>` and `<video>` is routed through one gain node, which is what
+ * allows volumes above 100% — the element's own `volume` property caps at 1.
+ *
+ * Two rules this file exists to respect:
+ *
+ * 1. `createMediaElementSource` may be called **once** per element, ever.
+ *    Calling it twice throws, hence the WeakMap.
+ * 2. Once an element is routed, its audio no longer reaches the speakers by
+ *    itself. If the gain node is not connected through to the destination, the
+ *    page goes silent — a far worse failure than a volume not applying.
  */
-import type { ChainState } from '../shared/types.ts'
-import type { ContentCommand, ContentLevel, ContentReport } from '../shared/messages.ts'
-import { UiStore } from '../ui/core/store.ts'
-import { ContentEngine } from './engine.ts'
-import { createMediaController } from './media-control.ts'
-import { createKeymap } from './keymap.ts'
-import { createOverlay, type OverlayHandle } from './overlay.ts'
+import type { ContentCommand, ContentReport } from '../shared/messages.ts'
+import type { AudioState } from '../shared/types.ts'
 
-const METER_INTERVAL_MS = 1000 / 24
+/** Sites mutate constantly; rescanning on every mutation is what makes an
+ *  extension show up in a page's performance trace. */
+const SCAN_DEBOUNCE_MS = 250
 
-// Frames would each build their own overlay and their own engine; only the top
-// document gets them. Media inside an iframe is that frame's own script's job.
+// Frames would each build their own graph; only the top document does.
 if (window.top === window.self) {
   start()
 }
 
 function start(): void {
-  // Every piece of mutable state is declared before anything that could read
-  // it. The engine and the media controller both call back into `report`, and
-  // `report` touches most of this — a `let` declared further down would be in
-  // its temporal dead zone at that moment and throw, taking the whole content
-  // script (and so the message listener) with it.
-  const store = new UiStore()
-  let overlay: OverlayHandle | null = null
-  let chain: ChainState | null = null
-  let meterTimer: ReturnType<typeof setInterval> | null = null
-  /** The last report we sent, so identical ones are not resent. */
-  let lastReport = ''
-  /** Last chain we handed the engine, to skip redundant re-applies. */
-  let lastChain = ''
+  // Declared before anything that could read them: the observer and the
+  // message listener both call in, and a `let` declared lower would be in its
+  // temporal dead zone at that moment.
+  let ctx: AudioContext | null = null
+  let gain: GainNode | null = null
+  let audio: AudioState = { volume: 1, muted: false }
+  let debounce: ReturnType<typeof setTimeout> | null = null
+  let cached: HTMLMediaElement[] = []
+  const routed = new WeakMap<HTMLMediaElement, MediaElementAudioSourceNode>()
+  const refused = new WeakSet<HTMLMediaElement>()
 
-  const engine = new ContentEngine(() => report())
-  const media = createMediaController(engine, () => report())
-
-  /**
-   * Tells the worker what this page has, and takes back the chain it should be
-   * running. One round trip configures a freshly loaded page.
-   *
-   * Only sent when the page's media situation actually changes — this used to
-   * ride the metering timer, which meant a chain resolve, a reply and a full
-   * re-apply of every parameter twenty-four times a second.
-   */
-  function report(): void {
-    const status = engine.status()
-    const message: ContentReport = {
-      type: 'content:report',
-      hasMediaElements: media.hasMedia(),
-      count: media.count(),
-      hooked: status.hooked,
-      silent: status.silent,
+  /** The context is created on the first media element, never before: a page
+   *  that plays nothing should not pay for one. */
+  function ensureGain(): GainNode | null {
+    if (!gain) {
+      try {
+        ctx = new AudioContext()
+        gain = ctx.createGain()
+        gain.connect(ctx.destination)
+        applyGain()
+      } catch {
+        return null
+      }
     }
-    const signature = JSON.stringify(message)
-    if (signature === lastReport) return
-    lastReport = signature
-
-    void chrome.runtime
-      .sendMessage(message)
-      .then((reply: { chain?: ChainState; meters?: boolean } | undefined) => {
-        if (reply?.chain) applyChain(reply.chain)
-        if (reply?.meters !== undefined) setMetering(reply.meters)
-      })
-      .catch(() => {
-        // The worker is asleep or reloading. Clear the dedupe key so the next
-        // change retries — otherwise a failed first report would be the only
-        // one this page ever sends.
-        lastReport = ''
-      })
+    return gain
   }
 
-  function applyChain(next: ChainState): void {
-    const signature = JSON.stringify(next)
-    if (signature === lastChain) return
-    lastChain = signature
-    chain = next
-    engine.apply(next)
+  function applyGain(): void {
+    if (!gain || !ctx) return
+    const target = audio.muted ? 0 : audio.volume
+    // A short ramp rather than a jump: stepping a gain node clicks.
+    gain.gain.setTargetAtTime(target, ctx.currentTime, 0.015)
   }
 
-  function setMetering(enabled: boolean): void {
-    if (enabled && !meterTimer) {
-      meterTimer = setInterval(() => {
-        const level = engine.readLevel()
-        // Fire and forget: no reply, no chain round trip, no state publish.
-        if (level) {
-          void chrome.runtime
-            .sendMessage({ type: 'content:level', level } satisfies ContentLevel)
-            .catch(() => undefined)
-        }
-      }, METER_INTERVAL_MS)
-    } else if (!enabled && meterTimer) {
-      clearInterval(meterTimer)
-      meterTimer = null
+  function hook(element: HTMLMediaElement): void {
+    if (routed.has(element) || refused.has(element)) return
+    const node = ensureGain()
+    if (!node || !ctx) return
+
+    let source: MediaElementAudioSourceNode
+    try {
+      source = ctx.createMediaElementSource(element)
+    } catch {
+      // Already routed by another script, or the browser refuses. Leaving it on
+      // the normal playback path is correct — the audio still plays, it just is
+      // not boosted. Remembered so the next scan does not try again.
+      refused.add(element)
+      return
     }
+    routed.set(element, source)
+    source.connect(node)
+
+    // The context starts suspended until a gesture; playing counts as one.
+    element.addEventListener('play', resume, { passive: true })
+    if (!element.paused) resume()
   }
 
-  /**
-   * The overlay is built on first use. Doing it eagerly would mean every page
-   * in the browser carrying a shadow root and a stylesheet it will never show.
-   */
-  function ensureOverlay(): OverlayHandle {
-    if (overlay) return overlay
-    store.connect()
-    overlay = createOverlay(store)
-    store.subscribe((state) => overlay?.update(state))
-    installKeyHandler(overlay)
-    media.scan()
-    return overlay
+  function resume(): void {
+    if (ctx?.state === 'suspended') void ctx.resume().catch(() => undefined)
   }
 
-  function installKeyHandler(handle: OverlayHandle): void {
-    const dispatch = createKeymap({
-      actions: handle.mixer.actions,
-      keymap: () => store.get().snapshot.settings.keymap,
-      onHelp: () => handle.toggleHelp(),
-      onClose: () => handle.close(),
-    })
-
-    // Capture phase, and only while the overlay is open: the page never sees
-    // these keys, and we never swallow keys when the mixer is closed.
-    window.addEventListener(
-      'keydown',
-      (event) => {
-        if (!handle.isOpen()) return
-        const target = event.composedPath()[0]
-        if (
-          target instanceof HTMLElement &&
-          (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)
-        ) {
-          if (event.key !== 'Escape') return
-        }
-        if (dispatch(event)) {
-          event.preventDefault()
-          event.stopPropagation()
-        }
-      },
-      { capture: true },
-    )
+  function scan(): void {
+    cached = Array.from(document.querySelectorAll<HTMLMediaElement>('audio, video'))
+    for (const element of cached) hook(element)
   }
+
+  function scheduleScan(): void {
+    if (debounce) return
+    debounce = setTimeout(() => {
+      debounce = null
+      scan()
+    }, SCAN_DEBOUNCE_MS)
+  }
+
+  new MutationObserver(scheduleScan).observe(document.documentElement, {
+    childList: true,
+    subtree: true,
+  })
+  // An element can start playing without ever being added to the DOM anew.
+  document.addEventListener(
+    'play',
+    (event) => {
+      if (event.target instanceof HTMLMediaElement) hook(event.target)
+    },
+    true,
+  )
 
   chrome.runtime.onMessage.addListener((message: ContentCommand, _sender, sendResponse) => {
-    switch (message.type) {
-      case 'content:toggle-overlay':
-        ensureOverlay().toggle()
-        break
-      case 'content:open-overlay':
-        ensureOverlay().open()
-        break
-      case 'content:close-overlay':
-        overlay?.close()
-        break
-      case 'content:chain':
-        applyChain(message.chain)
-        break
-      case 'content:set-rate':
-        media.setRate(message.rate)
-        break
-      case 'content:meters':
-        setMetering(message.enabled)
-        break
-      case 'content:probe-media':
-        media.scan()
-        break
+    if (message?.type === 'content:apply' && message.audio) {
+      audio = message.audio
+      applyGain()
+      // Newly arrived elements are picked up the moment a value is pushed.
+      scan()
     }
-    const status = engine.status()
-    sendResponse({
-      ok: true,
-      hasMedia: media.hasMedia(),
-      count: media.count(),
-      hooked: status.hooked,
-      chain: chain !== null,
-    })
+    sendResponse({ ok: true, media: cached.length, audio, routed: gain !== null })
     return false
   })
 
-  // Last: everything above is initialised, so the first scan can safely report.
-  media.scan()
+  scan()
 
-  window.addEventListener('pagehide', () => media.destroy(), { once: true })
+  // Announce, and take back whatever this origin is set to.
+  void chrome.runtime
+    .sendMessage({ type: 'content:ready', hasMedia: cached.length > 0 } satisfies ContentReport)
+    .catch(() => undefined)
 }

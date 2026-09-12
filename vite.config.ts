@@ -10,16 +10,12 @@ const target = (process.env.TARGET as Target) ?? 'chrome'
 const outDir = resolve(root, 'dist', target)
 
 /**
- * Content scripts and AudioWorklet processors cannot be ES modules:
- * manifest-declared content scripts run as classic scripts, and
- * `audioWorklet.addModule` support for static imports is not dependable.
- * Both are therefore bundled to self-contained IIFEs with esbuild, after
- * Vite has finished writing the module entries.
+ * A manifest-declared content script runs as a classic script, not a module,
+ * so it is bundled to a self-contained IIFE with esbuild after Vite has
+ * finished writing the module entries.
  */
 const IIFE_ENTRIES: Array<{ entry: string; out: string }> = [
   { entry: 'src/content/index.ts', out: 'content.js' },
-  { entry: 'src/engine/worklets/pitch-shifter.worklet.ts', out: 'worklets/pitch-shifter.js' },
-  { entry: 'src/engine/worklets/gate.worklet.ts', out: 'worklets/gate.js' },
 ]
 
 function extensionPlugin(): Plugin {
@@ -63,7 +59,7 @@ export default defineConfig({
     rollupOptions: {
       input: {
         background: resolve(root, 'src/background/index.ts'),
-        dashboard: resolve(root, 'dashboard.html'),
+        popup: resolve(root, 'popup.html'),
       },
       output: {
         entryFileNames: '[name].js',

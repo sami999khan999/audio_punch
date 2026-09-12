@@ -1,36 +1,34 @@
 /**
  * Single source of truth for the extension manifest.
  *
- * Kept as TypeScript (rather than a static manifest.json) so that the Chrome /
- * Edge manifest and a future Firefox manifest are generated from one object.
- * `src/platform/` is the matching runtime split.
+ * Kept as TypeScript so the Chrome/Edge and Firefox manifests come from one
+ * object.
  */
 
 export type Target = 'chrome' | 'firefox'
 
-const VERSION = '0.1.0'
+const VERSION = '1.0.0'
 
 /**
- * Chrome allows at most four commands carrying a *suggested* key binding.
- * These four are the ones that must work with no UI on screen; every other
- * shortcut is handled by the in-overlay keymap (`src/content/keymap.ts`).
+ * The browser allows an extension four shortcuts carrying a suggested key.
+ * These are exactly four.
  */
 const COMMANDS = {
-  'toggle-overlay': {
-    suggested_key: { default: 'Alt+Shift+A', mac: 'Alt+Shift+A' },
-    description: 'Show / hide the Audio Punch mixer',
+  'volume-up': {
+    suggested_key: { default: 'Alt+Shift+Up' },
+    description: 'Volume up',
+  },
+  'volume-down': {
+    suggested_key: { default: 'Alt+Shift+Down' },
+    description: 'Volume down',
+  },
+  'toggle-mute': {
+    suggested_key: { default: 'Alt+Shift+M' },
+    description: 'Mute / unmute',
   },
   'toggle-global': {
-    suggested_key: { default: 'Alt+Shift+G', mac: 'Alt+Shift+G' },
-    description: 'Toggle the global chain on / off',
-  },
-  'mute-all': {
-    suggested_key: { default: 'Alt+Shift+M', mac: 'Alt+Shift+M' },
-    description: 'Mute / unmute every captured tab',
-  },
-  'bypass-all': {
-    suggested_key: { default: 'Alt+Shift+B', mac: 'Alt+Shift+B' },
-    description: 'Bypass / re-engage all processing',
+    suggested_key: { default: 'Alt+Shift+G' },
+    description: 'Switch between this site and all sites',
   },
 }
 
@@ -39,8 +37,7 @@ export function makeManifest(target: Target): Record<string, unknown> {
     manifest_version: 3,
     name: 'Audio Punch',
     version: VERSION,
-    description:
-      'A DJ-style mixing desk for your browser: EQ, dynamics, space and pitch on every tab.',
+    description: 'Volume control for any tab, including boost above 100%.',
     icons: {
       16: 'icons/icon-16.png',
       32: 'icons/icon-32.png',
@@ -48,13 +45,10 @@ export function makeManifest(target: Target): Record<string, unknown> {
       128: 'icons/icon-128.png',
     },
     action: {
-      default_title: 'Audio Punch — open mixer',
-      default_icon: {
-        16: 'icons/icon-16.png',
-        32: 'icons/icon-32.png',
-      },
+      default_title: 'Audio Punch',
+      default_popup: 'popup.html',
+      default_icon: { 16: 'icons/icon-16.png', 32: 'icons/icon-32.png' },
     },
-    options_page: 'dashboard.html',
     content_scripts: [
       {
         matches: ['http://*/*', 'https://*/*'],
@@ -64,23 +58,13 @@ export function makeManifest(target: Target): Record<string, unknown> {
       },
     ],
     commands: COMMANDS,
+    permissions: ['storage', 'tabs'],
     host_permissions: ['<all_urls>'],
-    web_accessible_resources: [
-      {
-        // The page-side AudioContext loads these over the network stack, so
-        // they have to be reachable from the page's origin.
-        resources: ['worklets/*.js'],
-        matches: ['http://*/*', 'https://*/*'],
-      },
-    ],
   }
 
   if (target === 'firefox') {
-    // Firefox has neither tabCapture nor offscreen documents; the platform
-    // adapter falls back to the media-element engine there.
     return {
       ...base,
-      permissions: ['storage', 'unlimitedStorage', 'tabs', 'scripting', 'downloads'],
       background: { scripts: ['background.js'], type: 'module' },
       browser_specific_settings: {
         gecko: { id: 'audio-punch@local', strict_min_version: '115.0' },
@@ -90,7 +74,6 @@ export function makeManifest(target: Target): Record<string, unknown> {
 
   return {
     ...base,
-    permissions: ['storage', 'unlimitedStorage', 'tabs', 'scripting', 'downloads'],
     background: { service_worker: 'background.js', type: 'module' },
     minimum_chrome_version: '116',
   }
