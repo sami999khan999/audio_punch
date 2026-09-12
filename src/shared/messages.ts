@@ -7,7 +7,12 @@
 import type { AudioState, PopupState } from './types.ts'
 
 /** The four things a shortcut can do. Shared by both dispatch paths. */
-export type CommandName = 'volume-up' | 'volume-down' | 'toggle-mute' | 'toggle-global'
+export type CommandName =
+  | 'volume-up'
+  | 'volume-down'
+  | 'toggle-mute'
+  | 'toggle-global'
+  | 'reset'
 
 /** One shortcut, as the browser currently has it bound. */
 export interface Binding {

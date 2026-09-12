@@ -54,9 +54,19 @@ Click the toolbar icon, or use the shortcuts:
 | `Alt+Shift+↓` | Volume down |
 | `Alt+Shift+M` | Mute / unmute |
 | `Alt+Shift+G` | Switch between *This site* and *All sites* |
+| *unassigned* | Reset to 100% |
 
-Four is the limit the browser allows an extension to suggest keys for, so these
-are exactly four. Rebind them at `chrome://extensions/shortcuts`.
+**Reset needs a key of your choosing.** The browser allows an extension to
+suggest a key for only four commands — and declaring a fifth is not a soft
+failure, it makes Chrome reject the manifest and the extension does not load at
+all. So `reset` ships as a real command with no key attached.
+
+Assign one at `chrome://extensions/shortcuts`, or click the row in the popup,
+which opens that page. Once assigned it behaves exactly like the others,
+fullscreen included.
+
+The popup lists your actual bindings rather than these defaults, so a rebound
+shortcut shows up there correctly.
 
 The shortcuts act on whichever scope the popup is set to: with *This site*
 selected they change the current site, with *All sites* they change the global
@@ -75,7 +85,8 @@ is fullscreen**: outside it `chrome.commands` works, and handling the keys in
 both places would apply every press twice.
 
 It reads the live bindings from `chrome.commands.getAll()` rather than the
-manifest defaults, so rebinding a shortcut is respected in fullscreen too. The
+manifest defaults, so rebinding a shortcut is respected in fullscreen too — and
+so is assigning one to `reset`, which has no default. The
 on-screen value is appended to the fullscreen element, because a fullscreen
 element is promoted to the browser's top layer where nothing outside it renders
 at all — no z-index reaches past it.

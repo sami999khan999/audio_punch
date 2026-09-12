@@ -144,6 +144,9 @@ async function runCommand(command) {
       await pushAll(true);
       await notifyPopup();
       break;
+    case "reset":
+      await apply(scope, origin, defaultAudio(), true);
+      break;
   }
 }
 async function bindings() {

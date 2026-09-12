@@ -10,8 +10,14 @@ export type Target = 'chrome' | 'firefox'
 const VERSION = '1.0.0'
 
 /**
- * The browser allows an extension four shortcuts carrying a suggested key.
- * These are exactly four.
+ * The browser allows an extension **four** shortcuts carrying a suggested key,
+ * and declaring a fifth is not a soft failure: Chrome rejects the manifest and
+ * the extension does not load at all.
+ *
+ * `reset` is therefore declared without one. It is a real command — it appears
+ * at chrome://extensions/shortcuts for the user to assign, and once assigned it
+ * works everywhere the others do, fullscreen included, because the in-page
+ * fallback reads the live bindings rather than these defaults.
  */
 const COMMANDS = {
   'volume-up': {
@@ -29,6 +35,9 @@ const COMMANDS = {
   'toggle-global': {
     suggested_key: { default: 'Alt+Shift+G' },
     description: 'Switch between this site and all sites',
+  },
+  reset: {
+    description: 'Reset to 100%',
   },
 }
 

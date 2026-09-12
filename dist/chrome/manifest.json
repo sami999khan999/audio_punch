@@ -55,6 +55,9 @@
         "default": "Alt+Shift+G"
       },
       "description": "Switch between this site and all sites"
+    },
+    "reset": {
+      "description": "Reset to 100%"
     }
   },
   "permissions": [

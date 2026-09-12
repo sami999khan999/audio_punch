@@ -181,6 +181,9 @@ async function runCommand(command: CommandName): Promise<void> {
       await pushAll(true)
       await notifyPopup()
       break
+    case 'reset':
+      await apply(scope, origin, defaultAudio(), true)
+      break
   }
 }
 

@@ -103,10 +103,20 @@ const STYLES = `
   .actions button[data-on="true"] { background: #ff6b5a; color: #fff; }
 
   .keys { margin-top: 14px; padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.08); }
-  .key { display: flex; justify-content: space-between; gap: 10px; font-size: 11px; color: rgba(255,255,255,0.45); padding: 2px 0; }
+  .key {
+    display: flex; justify-content: space-between; align-items: center; gap: 10px;
+    width: 100%; text-align: left;
+    font-size: 11px; color: rgba(255,255,255,0.45); padding: 3px 0;
+  }
+  .key:hover { color: rgba(255,255,255,0.72); }
   .key kbd {
     font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-    font-size: 10px; color: rgba(255,255,255,0.72);
+    font-size: 10px; color: rgba(255,255,255,0.72); white-space: nowrap;
+  }
+  /* An unassigned command reads as something to act on, not as a dead row. */
+  .key kbd[data-unset="true"] {
+    color: #7fd4c1; border: 1px dashed rgba(127,212,193,0.5);
+    border-radius: 5px; padding: 1px 6px;
   }
   .note { margin-top: 10px; font-size: 11px; color: rgba(255,255,255,0.4); }
 `
@@ -210,14 +220,56 @@ function mount(): void {
 
   const note = el('div', { class: 'note' })
 
-  const keys = el('div', { class: 'keys' }, [
-    keyRow('Volume up / down', 'Alt+Shift+↑ ↓'),
-    keyRow('Mute / unmute', 'Alt+Shift+M'),
-    keyRow('This site / all sites', 'Alt+Shift+G'),
-  ])
+  const keys = el('div', { class: 'keys' })
 
-  function keyRow(label: string, accel: string): HTMLElement {
-    return el('div', { class: 'key' }, [el('span', {}, [label]), el('kbd', {}, [accel])])
+  /** Chrome spells these out; the arrows read better as glyphs. */
+  function prettyShortcut(shortcut: string): string {
+    return shortcut
+      .replace(/Up Arrow/g, '↑')
+      .replace(/Down Arrow/g, '↓')
+      .replace(/Left Arrow/g, '←')
+      .replace(/Right Arrow/g, '→')
+  }
+
+  const COMMAND_LABELS: Array<[string, string]> = [
+    ['volume-up', 'Volume up'],
+    ['volume-down', 'Volume down'],
+    ['toggle-mute', 'Mute / unmute'],
+    ['reset', 'Reset to 100%'],
+    ['toggle-global', 'This site / all sites'],
+  ]
+
+  /**
+   * The real bindings, not the manifest defaults — they can be rebound, and
+   * `reset` has none out of the box because the browser only allows four
+   * commands to suggest a key.
+   */
+  async function renderKeys(): Promise<void> {
+    const commands = await chrome.commands.getAll()
+    const byName = new Map(commands.map((c) => [c.name ?? '', c.shortcut ?? '']))
+
+    keys.replaceChildren(
+      ...COMMAND_LABELS.map(([name, label]) => {
+        const shortcut = byName.get(name) ?? ''
+        const kbd = el('kbd', shortcut ? {} : { 'data-unset': 'true' }, [
+          shortcut ? prettyShortcut(shortcut) : 'Set a key',
+        ])
+        const row = el(
+          'button',
+          {
+            class: 'key',
+            type: 'button',
+            title: shortcut ? 'Change this shortcut' : 'Assign a key to this',
+          },
+          [el('span', {}, [label]), kbd],
+        )
+        // Only the browser can bind a shortcut, and only from its own page.
+        row.addEventListener('click', () => {
+          void chrome.tabs.create({ url: 'chrome://extensions/shortcuts' })
+        })
+        return row
+      }),
+    )
   }
 
   document.body.replaceChildren(
@@ -321,6 +373,7 @@ function mount(): void {
     })
   })
 
+  void renderKeys()
   void send({ type: 'popup:hello' }).then((response) => {
     if (response.ok) render(response.state)
   })

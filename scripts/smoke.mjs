@@ -249,13 +249,59 @@ try {
   await page.waitForTimeout(300)
   check('unmute works in fullscreen', (await pageState())?.audio?.muted === false)
 
+  // Reset ships unbound, so bind it the way a user would and prove it reaches
+  // the page — including in fullscreen, where the in-page fallback runs.
+  await ask({ type: 'popup:set-volume', scope: 'site', volume: 2.2 })
+  await page.waitForTimeout(300)
+  const bound = await popup.evaluate(async () => {
+    // Stand in for the user assigning a key at chrome://extensions/shortcuts:
+    // hand the page a binding for reset and check the fallback honours it.
+    const tabs = await chrome.tabs.query({})
+    const t = tabs.find((x) => (x.title ?? '').includes('Audio Punch smoke'))
+    const existing = await chrome.commands.getAll()
+    const bindings = existing
+      .filter((c) => c.name && c.shortcut)
+      .map((c) => ({ command: c.name, shortcut: c.shortcut }))
+    bindings.push({ command: 'reset', shortcut: 'Alt+Shift+0' })
+    await chrome.tabs.sendMessage(t.id, { type: 'content:bindings', bindings }, { frameId: 0 })
+    return bindings.length
+  })
+  check('a bound reset reaches the page', bound === 5, `${bound} bindings`)
+
+  await page.keyboard.press('Alt+Shift+0')
+  await page.waitForTimeout(400)
+  applied = await pageState()
+  check(
+    'reset works in fullscreen once bound',
+    applied?.audio?.volume === 1 && applied?.audio?.muted === false,
+    `${applied?.audio?.volume}`,
+  )
+
   await page.evaluate(() => document.exitFullscreen())
   await page.waitForTimeout(300)
+
+  // And through the popup's own path, where it has always been a button.
+  await ask({ type: 'popup:set-volume', scope: 'site', volume: 3 })
+  await ask({ type: 'popup:set-muted', scope: 'site', muted: true })
+  await ask({ type: 'popup:reset', scope: 'site' })
+  await page.waitForTimeout(350)
+  applied = await pageState()
+  check(
+    'reset works from the popup',
+    applied?.audio?.volume === 1 && applied?.audio?.muted === false,
+    `${applied?.audio?.volume} muted=${applied?.audio?.muted}`,
+  )
 
   // ── manifest shape ────────────────────────────────────────────────────
   const manifest = await popup.evaluate(() => chrome.runtime.getManifest())
   check('the popup is the action', manifest.action?.default_popup === 'popup.html')
-  check('four shortcuts are declared', Object.keys(manifest.commands ?? {}).length === 4)
+  // Five commands, four suggested keys: a fifth suggested key makes Chrome
+  // reject the manifest outright and the extension does not load at all.
+  const commands = manifest.commands ?? {}
+  check('five commands are declared', Object.keys(commands).length === 5, Object.keys(commands).join(', '))
+  const suggested = Object.values(commands).filter((c) => c.suggested_key).length
+  check('only four suggest a key', suggested === 4, `${suggested}`)
+  check('reset is declared without one', Boolean(commands.reset) && !commands.reset.suggested_key)
   check(
     'only the permissions it needs',
     JSON.stringify(manifest.permissions) === JSON.stringify(['storage', 'tabs']),
