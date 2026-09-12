@@ -160,6 +160,30 @@ Two details worth knowing before editing:
   both do, and a `let` declared lower would be in its temporal dead zone at that
   moment — which throws, takes the message listener with it, and makes every
   later failure look like "receiving end does not exist".
+- **A press must not wait on the worker.** The browser stops the service worker
+  whenever it is idle, so a shortcut routinely arrives while it is starting up.
+  The page therefore steps its own audio the moment it catches a key and tells
+  the worker afterwards; the worker's push settles the stored value and catches
+  up every other tab. That push carries back the press number it answers, so a
+  page already a press or two ahead drops it rather than stepping backwards and
+  forwards again.
+- **A command reads and writes the settings without an `await` in between.**
+  Commands that arrived while the worker was down are delivered together, so
+  several run in the same turn. Reading before a yield meant they all read the
+  stale value and only the last write survived — eight presses moved the volume
+  one step. `load()` is memoised for the same reason: without it each of those
+  commands started its own storage read and ended up editing a *separate*
+  settings object.
+- **Nothing audible waits on anything else.** The tab in front is messaged
+  first and directly. Walking the tab list, catching up background tabs,
+  writing storage and redrawing the popup all happen behind it, coalesced —
+  messaging a background tab can take as long as that tab's own main thread
+  needs, and doing it per keypress is what made a held-down shortcut feel like
+  it had seized up.
+- **Applying a value never triggers the shadow-root walk.** That walk visits
+  every element on the page and runs on the same main thread that has to handle
+  the incoming value. It stays on the debounced scan, which is already looking
+  for anything new.
 - **Storage writes are debounced.** Holding the volume shortcut would otherwise
   write on every keypress.
 - **The popup updates live.** The worker broadcasts after every change, and the
@@ -180,7 +204,6 @@ npm test               # unit tests (node:test)
 npm run build          # → dist/chrome
 npm run verify         # all three
 
-npm i -D playwright
 npm run test:smoke     # loads the built extension in real Chromium
 ```
 
@@ -204,6 +227,19 @@ It also drives the real shortcuts against a fullscreen video, which is the one
 end-to-end cover the shortcut path has: `chrome.commands` itself cannot be fired
 from headless Chromium, but the in-page fullscreen fallback receives ordinary key
 events and runs exactly the same worker code that `chrome.commands` does.
+
+Four of its checks are about presses landing smoothly, and each was written
+against the failure it guards. A press has to move the page without the worker
+having answered — asserted on the count of presses the page acted on itself,
+not on a stopwatch, since a machine fast enough to answer within any timeout
+chosen here would make a timing check meaningless. Eight commands delivered in
+one tick to a worker that has just been stopped — the browser's own behaviour,
+reproduced — have to be eight steps; before the fix they were one. The stored
+value has to agree with what the page is playing, and the announced value must
+never step backwards.
+
+`CHROME_PATH` selects the browser binary if the Playwright-managed one is not
+the one installed.
 
 Icons are generated, not committed as opaque assets:
 `node scripts/make-icons.mjs`.

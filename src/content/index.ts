@@ -14,7 +14,8 @@
  */
 import type { Binding, CommandName, ContentCommand, ContentReport } from '../shared/messages.ts'
 import type { AudioState } from '../shared/types.ts'
-import { formatVolume } from '../shared/defaults.ts'
+import { defaultAudio, formatVolume } from '../shared/defaults.ts'
+import { nudge, pushIsCurrent } from '../background/resolve.ts'
 
 /** Sites mutate constantly; rescanning on every mutation is what makes an
  *  extension show up in a page's performance trace. */
@@ -127,6 +128,11 @@ function start(): void {
   const ourVolume = new WeakSet<HTMLMediaElement>()
   const ourMute = new WeakSet<HTMLMediaElement>()
   let lastCapped: boolean | null = null
+  /** What the last push said about the global switch, for the announcement. */
+  let globalOn = false
+  /** Counts presses this page has applied itself, so a push that answers an
+   *  earlier one can be recognised and dropped. */
+  let localSeq = 0
   let toast: HTMLElement | null = null
   let toastTimer: ReturnType<typeof setTimeout> | null = null
   const routed = new WeakMap<HTMLMediaElement, MediaElementAudioSourceNode>()
@@ -276,11 +282,11 @@ function start(): void {
    * with one ordinary video and one inside a custom element never had the
    * second one found.
    */
-  function collect(): HTMLMediaElement[] {
+  function collect(deep: boolean): HTMLMediaElement[] {
     const found = Array.from(document.querySelectorAll<HTMLMediaElement>('audio, video'))
 
     const now = Date.now()
-    if (now >= deepDue) {
+    if (deep && now >= deepDue) {
       deepDue = now + DEEP_SCAN_INTERVAL_MS
       const walk = (root: ParentNode): void => {
         for (const node of root.querySelectorAll<HTMLElement>('*')) {
@@ -302,8 +308,14 @@ function start(): void {
     return found
   }
 
-  function scan(): void {
-    cached = collect()
+  /**
+   * `deep` walks open shadow roots as well, which costs a pass over every
+   * element on the page. Applying a value asks for the cheap scan only: the
+   * whole point is that a keypress is heard at once, and the debounced scan
+   * below is already walking for anything new.
+   */
+  function scan(deep = true): void {
+    cached = collect(deep)
     for (const element of cached) adopt(element)
     applyToElements()
   }
@@ -316,10 +328,13 @@ function start(): void {
     }, SCAN_DEBOUNCE_MS)
   }
 
-  new MutationObserver(scheduleScan).observe(document.documentElement, {
-    childList: true,
-    subtree: true,
-  })
+  new MutationObserver((records) => {
+    // A page that rewrites a timestamp every frame should not cost a scan.
+    for (const record of records) {
+      for (const node of record.addedNodes) if (node instanceof Element) return scheduleScan()
+      for (const node of record.removedNodes) if (node instanceof Element) return scheduleScan()
+    }
+  }).observe(document.documentElement, { childList: true, subtree: true })
   // An element can start playing without ever being added to the DOM anew.
   document.addEventListener(
     'play',
@@ -401,6 +416,42 @@ function start(): void {
    * Scoped to fullscreen deliberately: outside it chrome.commands works, and
    * handling the keys here as well would apply every press twice.
    */
+  /**
+   * Moves this page's audio at once, without waiting for the worker.
+   *
+   * The worker is stopped whenever it is idle, so the round trip behind a
+   * shortcut can take as long as starting it up — which is what made presses
+   * feel like they did nothing and then all landed together. The step is
+   * computed with the very function the worker uses, against the value the
+   * worker last pushed, so the authoritative push that follows is the same
+   * number and lands silently.
+   *
+   * `toggle-global` is not done here: swapping scope means playing the *other*
+   * scope's value, and only the worker knows what that is.
+   */
+  function stepLocally(command: CommandName): void {
+    switch (command) {
+      case 'volume-up':
+        audio = nudge(audio, 1)
+        break
+      case 'volume-down':
+        audio = nudge(audio, -1)
+        break
+      case 'toggle-mute':
+        audio = { volume: audio.volume, muted: !audio.muted }
+        break
+      case 'reset':
+        audio = defaultAudio()
+        break
+      default:
+        return
+    }
+    localSeq += 1
+    applyGain()
+    applyToElements()
+    if (announcingFrame()) announce(globalOn)
+  }
+
   window.addEventListener(
     'keydown',
     (event) => {
@@ -412,8 +463,13 @@ function start(): void {
       if (!binding) return
       event.preventDefault()
       event.stopPropagation()
+      stepLocally(binding.command)
       void chrome.runtime
-        .sendMessage({ type: 'content:command', command: binding.command } satisfies ContentReport)
+        .sendMessage({
+          type: 'content:command',
+          command: binding.command,
+          seq: localSeq,
+        } satisfies ContentReport)
         .catch(() => undefined)
     },
     true,
@@ -421,11 +477,27 @@ function start(): void {
 
   chrome.runtime.onMessage.addListener((message: ContentCommand, _sender, sendResponse) => {
     if (message?.type === 'content:apply' && message.audio) {
+      globalOn = message.global === true
+      // A push answering a press this page has already moved past. Its value
+      // is older than what is playing, and the next push carries the settled
+      // one, so this is dropped rather than played.
+      if (!pushIsCurrent(message.seq, localSeq)) {
+        sendResponse({
+          ok: true,
+          media: cached.length,
+          audio,
+          routed: gain !== null,
+          bindings: parsed.length,
+        })
+        return false
+      }
       audio = message.audio
       applyGain()
-      // Newly arrived elements are picked up the moment a value is pushed.
-      scan()
-      if (message.announce && announcingFrame()) announce(message.global === true)
+      // Newly arrived elements are picked up the moment a value is pushed, but
+      // with the cheap scan only — this runs on the page's main thread, and a
+      // shadow-root walk here would delay the very thing it is meant to serve.
+      scan(false)
+      if (message.announce && announcingFrame()) announce(globalOn)
     }
     if (message?.type === 'content:bindings') {
       parsed = message.bindings
@@ -438,6 +510,9 @@ function start(): void {
       audio,
       routed: gain !== null,
       bindings: parsed.length,
+      /** How many presses this page acted on itself, without waiting for the
+       *  worker. The end-to-end test asserts on it. */
+      localSteps: localSeq,
     })
     return false
   })

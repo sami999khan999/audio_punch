@@ -63,7 +63,7 @@ let ctx, profile
 try {
   profile = await mkdtemp(join(tmpdir(), 'audio-punch-'))
   ctx = await chromium.launchPersistentContext(profile, {
-    channel: 'chromium',
+    ...(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : { channel: 'chromium' }),
     args: [
       '--headless=new',
       `--disable-extensions-except=${dist}`,
@@ -275,6 +275,109 @@ try {
     'reset works in fullscreen once bound',
     applied?.audio?.volume === 1 && applied?.audio?.muted === false,
     `${applied?.audio?.volume}`,
+  )
+
+  // ── a burst of presses ────────────────────────────────────────────────
+  // The symptom this guards: press the shortcut fast and nothing seems to
+  // happen, then everything lands at once. Two separate causes, both pinned
+  // here — presses that overwrite each other, and presses the page does not
+  // act on until the worker has answered.
+  await ask({ type: 'popup:set-volume', scope: 'site', volume: 1 })
+  await page.waitForTimeout(300)
+
+  // The page must move on the keypress itself, not on the reply. Stopping the
+  // worker is what the browser does to it whenever it is idle, and is when a
+  // round trip is at its slowest.
+  const before = (await pageState())?.localSteps ?? 0
+  const cdp = await ctx.newCDPSession(page)
+  await cdp.send('ServiceWorker.enable')
+  await cdp.send('ServiceWorker.stopAllWorkers')
+  await cdp.detach()
+  await page.keyboard.press('Alt+Shift+ArrowUp')
+  await page.waitForTimeout(400)
+  // Asserted on the mechanism rather than on a stopwatch: `localSteps` counts
+  // presses the page acted on by itself. A machine fast enough to answer
+  // within any timeout chosen here would make a timing check meaningless.
+  applied = await pageState()
+  check(
+    'a press is heard without waiting for the worker',
+    applied?.localSteps === before + 1 && applied?.audio?.volume === 1.1,
+    `${(applied?.localSteps ?? 0) - before} local step(s), volume ${applied?.audio?.volume}`,
+  )
+
+  // And every press must count. This is the case that used to lose them: the
+  // browser stops an idle worker and delivers everything queued behind it at
+  // once, so the commands all start together. Fired in one tick at a worker
+  // that has just been stopped, which is that situation exactly.
+  await ask({ type: 'popup:set-volume', scope: 'site', volume: 1 })
+  await page.waitForTimeout(300)
+  const cold = await ctx.newCDPSession(page)
+  await cold.send('ServiceWorker.enable')
+  await cold.send('ServiceWorker.stopAllWorkers')
+  await cold.detach()
+  await popup.evaluate(async () => {
+    const eight = Array.from({ length: 8 }, () =>
+      chrome.runtime.sendMessage({ type: 'content:command', command: 'volume-up', seq: 0 }),
+    )
+    await Promise.all(eight)
+  })
+  await page.waitForTimeout(900)
+  applied = await pageState()
+  check(
+    'eight commands delivered together are eight steps',
+    applied?.audio?.volume === 1.8,
+    `${applied?.audio?.volume}`,
+  )
+
+  await page.keyboard.down('Alt')
+  await page.keyboard.down('Shift')
+  for (let i = 0; i < 8; i++) await page.keyboard.press('ArrowUp')
+  await page.keyboard.up('Shift')
+  await page.keyboard.up('Alt')
+  await page.waitForTimeout(700)
+  applied = await pageState()
+  check(
+    'eight fast presses are eight more steps',
+    applied?.audio?.volume === 2.6,
+    `${applied?.audio?.volume}`,
+  )
+
+  // The value the worker settles on has to be the one the page is playing.
+  const settled = await popup.evaluate(async () => {
+    const bag = await chrome.storage.local.get('audio-punch:settings')
+    const sites = bag['audio-punch:settings']?.sites ?? {}
+    return Object.values(sites)[0]?.volume
+  })
+  check('the stored value agrees with the page', settled === 2.6, `${settled}`)
+
+  // Never backwards: a push answering an earlier press must not undo a later
+  // one the page has already taken.
+  await ask({ type: 'popup:set-volume', scope: 'site', volume: 1 })
+  await page.waitForTimeout(300)
+  const watching = await page.evaluate(() => {
+    // Watch the announcement, which carries the value the page is playing.
+    const values = []
+    const fs = document.fullscreenElement ?? document.body
+    const ob = new MutationObserver(() => {
+      const t = [...fs.querySelectorAll('div')].map((d) => d.textContent).filter(Boolean).pop()
+      if (t && t.endsWith('%')) values.push(parseInt(t, 10))
+    })
+    ob.observe(fs, { childList: true, subtree: true, characterData: true })
+    window.__values = values
+    return true
+  })
+  await page.keyboard.down('Alt')
+  await page.keyboard.down('Shift')
+  for (let i = 0; i < 6; i++) await page.keyboard.press('ArrowUp')
+  await page.keyboard.up('Shift')
+  await page.keyboard.up('Alt')
+  await page.waitForTimeout(700)
+  const values = await page.evaluate(() => window.__values ?? [])
+  const wentBackwards = values.some((v, i) => i > 0 && v < values[i - 1])
+  check(
+    'the announced value never steps backwards',
+    !wentBackwards && watching,
+    values.join(' -> '),
   )
 
   await page.evaluate(() => document.exitFullscreen())

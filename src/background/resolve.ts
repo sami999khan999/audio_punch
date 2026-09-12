@@ -67,3 +67,21 @@ export function nudge(current: AudioState, steps: number): AudioState {
   if (steps > 0 && current.muted) return { volume, muted: false }
   return { volume, muted: current.muted }
 }
+
+/**
+ * Whether a pushed value is still current for the page receiving it.
+ *
+ * The page moves its own audio the moment a shortcut is pressed rather than
+ * waiting for the worker to answer, so a push can arrive describing a press the
+ * page has already moved past. Taking it would step the volume back and then
+ * forward again — an audible wobble on exactly the fast presses this is meant
+ * to smooth out.
+ *
+ * `seq` is the press the push answers; `applied` is how many presses the page
+ * has taken itself. A push with no `seq` did not come from a press at all (a
+ * navigation, the popup, another window) and is always current.
+ */
+export function pushIsCurrent(seq: number | undefined, applied: number): boolean {
+  if (seq === undefined) return true
+  return seq >= applied
+}

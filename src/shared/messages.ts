@@ -44,6 +44,16 @@ export type ContentCommand =
       announce?: boolean
       /** True when the change applies to every site, for the announcement. */
       global?: boolean
+      /**
+       * Echoes the `seq` of the keypress this push answers.
+       *
+       * The page moves its own audio the instant a shortcut is pressed rather
+       * than waiting for this message, so by the time a push arrives the page
+       * may already be a press or two ahead. Without the echo it would step
+       * back to the older value and then forward again — an audible wobble on
+       * exactly the fast presses this is all meant to smooth out.
+       */
+      seq?: number
     }
   /** The live shortcut bindings, so the in-page fallback matches whatever the
    *  user has actually configured rather than the manifest defaults. */
@@ -68,7 +78,12 @@ export type ContentReport =
    * reach too. The content script listens itself while fullscreen and forwards
    * what it catches.
    */
-  | { type: 'content:command'; command: CommandName }
+  | {
+      type: 'content:command'
+      command: CommandName
+      /** Counts the presses this page has already applied itself. */
+      seq: number
+    }
 
 export type ToBackground = PopupRequest | ContentReport
 

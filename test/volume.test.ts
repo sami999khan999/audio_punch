@@ -10,7 +10,14 @@ import assert from 'node:assert/strict'
 
 import { clampVolume, defaultSettings, formatVolume, readSettings } from '../src/shared/defaults.ts'
 import { MAX_VOLUME, VOLUME_STEP } from '../src/shared/types.ts'
-import { nudge, readScope, resolveAudio, scopeFor, writeScope } from '../src/background/resolve.ts'
+import {
+  nudge,
+  pushIsCurrent,
+  readScope,
+  resolveAudio,
+  scopeFor,
+  writeScope,
+} from '../src/background/resolve.ts'
 
 const SITE = 'https://example.com'
 
@@ -132,4 +139,67 @@ test('volume formats as a percentage', () => {
   assert.equal(formatVolume(1), '100%')
   assert.equal(formatVolume(0), '0%')
   assert.equal(formatVolume(2.5), '250%')
+})
+
+/**
+ * The read-modify-write a command performs has to be atomic.
+ *
+ * The browser stops an idle service worker and delivers everything that
+ * arrived while it was down together, so several commands routinely start in
+ * the same turn. If a command awaits anything between reading the volume and
+ * writing it, they all read the stale value and only the last write survives —
+ * the user presses five times and hears one step.
+ */
+test('a burst of steps taken in one turn each accumulates', () => {
+  const settings = defaultSettings()
+  for (let i = 0; i < 5; i++) {
+    writeScope(settings, 'site', SITE, nudge(readScope(settings, 'site', SITE), 1))
+  }
+  assert.equal(settings.sites[SITE]?.volume, 1.5)
+})
+
+test('a burst still accumulates when the commands interleave', async () => {
+  const settings = defaultSettings()
+  // Five commands started together, each yielding before it acts — the way
+  // they arrive when the worker wakes up with a queue behind it.
+  await Promise.all(
+    Array.from({ length: 5 }, async () => {
+      await Promise.resolve()
+      writeScope(settings, 'site', SITE, nudge(readScope(settings, 'site', SITE), 1))
+    }),
+  )
+  assert.equal(settings.sites[SITE]?.volume, 1.5)
+})
+
+test('reading before an await is what loses the presses', async () => {
+  // The shape the worker must never have: read, await, write. Pinned so the
+  // cost of reintroducing it is a failing test rather than a bug report.
+  const settings = defaultSettings()
+  await Promise.all(
+    Array.from({ length: 5 }, async () => {
+      const before = readScope(settings, 'site', SITE)
+      await Promise.resolve()
+      writeScope(settings, 'site', SITE, nudge(before, 1))
+    }),
+  )
+  assert.equal(settings.sites[SITE]?.volume, 1.1)
+})
+
+/**
+ * A page acts on a shortcut itself and tells the worker afterwards, so a push
+ * can arrive describing a press the page has already moved past. Playing it
+ * would step the volume backwards and then forwards again.
+ */
+test('a push answering an older press is not current', () => {
+  assert.equal(pushIsCurrent(3, 3), true, 'the press it answers is the last one taken')
+  assert.equal(pushIsCurrent(4, 3), true, 'the worker is ahead; take it')
+  assert.equal(pushIsCurrent(2, 3), false, 'answers a press already moved past')
+  assert.equal(pushIsCurrent(0, 3), false)
+})
+
+test('a push that answers no press at all is always current', () => {
+  // A navigation, the popup, or another window changing the same site. There
+  // is no press to be behind, so there is nothing to drop.
+  assert.equal(pushIsCurrent(undefined, 0), true)
+  assert.equal(pushIsCurrent(undefined, 7), true)
 })
