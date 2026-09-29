@@ -1,4 +1,4 @@
-import { M as MAX_VOLUME, p as prettyOrigin, f as formatVolume } from "./chunks/origin-C1Nq_0c0.js";
+import { M as MAX_VOLUME, p as prettyOrigin, f as formatVolume, a as prettyShortcut, s as shortcutFromEvent } from "./chunks/origin-CwnPWmt4.js";
 const STYLES = `
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
@@ -85,7 +85,9 @@ const STYLES = `
   .actions button[data-on="true"] { background: #ff6b5a; color: #fff; }
 
   .keys { margin-top: 14px; padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.08); }
+  .key-row { display: flex; align-items: center; gap: 4px; }
   .key {
+    flex: 1;
     display: flex; justify-content: space-between; align-items: center; gap: 10px;
     width: 100%; text-align: left;
     font-size: 11px; color: rgba(255,255,255,0.45); padding: 3px 0;
@@ -100,6 +102,20 @@ const STYLES = `
     color: #7fd4c1; border: 1px dashed rgba(127,212,193,0.5);
     border-radius: 5px; padding: 1px 6px;
   }
+  .key kbd[data-listening="true"] {
+    color: #06201a; background: #7fd4c1; border-radius: 5px; padding: 1px 6px;
+  }
+  .clear {
+    width: 18px; height: 18px; border-radius: 5px; flex: 0 0 auto;
+    font-size: 13px; line-height: 1; color: rgba(255,255,255,0.3);
+  }
+  .clear:hover { color: #fff; background: rgba(255,255,255,0.1); }
+  .clear:disabled { visibility: hidden; }
+  .restore {
+    margin-top: 6px; font-size: 10px; letter-spacing: 0.06em;
+    color: rgba(127,212,193,0.8); padding: 2px 0;
+  }
+  .restore:hover { color: #7fd4c1; }
   .note { margin-top: 10px; font-size: 11px; color: rgba(255,255,255,0.4); }
 `;
 function send(request) {
@@ -181,41 +197,74 @@ function mount() {
   const actions = el("div", { class: "actions" }, [muteBtn, resetBtn]);
   const note = el("div", { class: "note" });
   const keys = el("div", { class: "keys" });
-  function prettyShortcut(shortcut) {
-    return shortcut.replace(/Up Arrow/g, "↑").replace(/Down Arrow/g, "↓").replace(/Left Arrow/g, "←").replace(/Right Arrow/g, "→");
+  const COMMAND_LABELS = {
+    "volume-up": "Volume up",
+    "volume-down": "Volume down",
+    "toggle-mute": "Mute / unmute",
+    reset: "Reset to 100%",
+    "toggle-global": "This site / all sites"
+  };
+  let recording = null;
+  function renderKeys() {
+    if (!state) return;
+    const rows = state.bindings.map((row) => {
+      const listening = recording === row.command;
+      const kbd = el("kbd", row.shortcut || listening ? {} : { "data-unset": "true" }, [
+        listening ? "Press keys…" : row.shortcut ? prettyShortcut(row.shortcut) : "Set a key"
+      ]);
+      if (listening) kbd.setAttribute("data-listening", "true");
+      const set = el(
+        "button",
+        {
+          class: "key",
+          type: "button",
+          title: listening ? "Press the new keys, or Escape to cancel" : "Click, then press the new keys"
+        },
+        [el("span", {}, [COMMAND_LABELS[row.command]]), kbd]
+      );
+      set.addEventListener("click", () => {
+        recording = listening ? null : row.command;
+        renderKeys();
+      });
+      const clear = el(
+        "button",
+        { class: "clear", type: "button", title: "Remove this shortcut", "aria-label": "Remove shortcut" },
+        ["×"]
+      );
+      clear.disabled = !row.shortcut;
+      clear.addEventListener("click", () => {
+        recording = null;
+        void request({ type: "popup:set-binding", command: row.command, shortcut: "" });
+      });
+      return el("div", { class: "key-row" }, [set, clear]);
+    });
+    const restore = el("button", { class: "restore", type: "button" }, ["Restore default keys"]);
+    restore.hidden = !state.bindings.some((row) => row.custom);
+    restore.addEventListener("click", () => {
+      recording = null;
+      void request({ type: "popup:reset-bindings" });
+    });
+    keys.replaceChildren(...rows, restore);
   }
-  const COMMAND_LABELS = [
-    ["volume-up", "Volume up"],
-    ["volume-down", "Volume down"],
-    ["toggle-mute", "Mute / unmute"],
-    ["reset", "Reset to 100%"],
-    ["toggle-global", "This site / all sites"]
-  ];
-  async function renderKeys() {
-    const commands = await chrome.commands.getAll();
-    const byName = new Map(commands.map((c) => [c.name ?? "", c.shortcut ?? ""]));
-    keys.replaceChildren(
-      ...COMMAND_LABELS.map(([name, label]) => {
-        const shortcut = byName.get(name) ?? "";
-        const kbd = el("kbd", shortcut ? {} : { "data-unset": "true" }, [
-          shortcut ? prettyShortcut(shortcut) : "Set a key"
-        ]);
-        const row = el(
-          "button",
-          {
-            class: "key",
-            type: "button",
-            title: shortcut ? "Change this shortcut" : "Assign a key to this"
-          },
-          [el("span", {}, [label]), kbd]
-        );
-        row.addEventListener("click", () => {
-          void chrome.tabs.create({ url: "chrome://extensions/shortcuts" });
-        });
-        return row;
-      })
-    );
-  }
+  window.addEventListener(
+    "keydown",
+    (event) => {
+      if (!recording) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.key === "Escape" && !event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey) {
+        recording = null;
+        renderKeys();
+        return;
+      }
+      const shortcut = shortcutFromEvent(event);
+      if (!shortcut) return;
+      const command = recording;
+      recording = null;
+      void request({ type: "popup:set-binding", command, shortcut });
+    },
+    true
+  );
   document.body.replaceChildren(
     el("div", { class: "wrap" }, [
       el("div", { class: "brand" }, [el("b", {}, ["Audio"]), el("span", {}, ["Punch"])]),
@@ -271,6 +320,7 @@ function mount() {
     for (const control of [minus, plus, muteBtn, resetBtn]) control.disabled = blocked;
     track.style.opacity = blocked ? "0.35" : "1";
     track.style.pointerEvents = blocked ? "none" : "auto";
+    renderKeys();
     note.textContent = blocked ? "Switch to All sites to set a volume from here." : next.boostCapped && audio.volume > 1 ? "This page's audio is served from another site without CORS, so it cannot go past 100%." : audio.volume > 1 && !audio.muted ? "Boosting past 100%. Loud sources may distort." : "";
   }
   chrome.runtime.onMessage.addListener((message) => {
@@ -282,7 +332,6 @@ function mount() {
       if (response.ok) render(response.state);
     });
   });
-  void renderKeys();
   void send({ type: "popup:hello" }).then((response) => {
     if (response.ok) render(response.state);
   });

@@ -9,6 +9,8 @@ import {
   type AudioState,
   type Settings,
 } from './types.ts'
+import type { CommandName } from './messages.ts'
+import { COMMANDS, parseShortcut } from './keys.ts'
 
 export function clampVolume(value: unknown): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) return 1
@@ -27,6 +29,7 @@ export function defaultSettings(): Settings {
     globalOn: false,
     global: defaultAudio(),
     sites: {},
+    bindings: {},
   }
 }
 
@@ -60,6 +63,13 @@ export function readSettings(raw: unknown): Settings {
         muted: audio.muted,
         updatedAt: isRecord(value) && typeof value.updatedAt === 'number' ? value.updatedAt : 0,
       }
+    }
+  }
+  if (isRecord(raw.bindings)) {
+    for (const [command, shortcut] of Object.entries(raw.bindings)) {
+      if (!COMMANDS.includes(command as CommandName) || typeof shortcut !== 'string') continue
+      if (shortcut !== '' && !parseShortcut(shortcut)) continue
+      settings.bindings[command as CommandName] = shortcut
     }
   }
   return settings

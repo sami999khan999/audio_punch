@@ -16,6 +16,7 @@ import type { Binding, CommandName, ContentCommand, ContentReport } from '../sha
 import type { AudioState } from '../shared/types.ts'
 import { defaultAudio, formatVolume } from '../shared/defaults.ts'
 import { nudge, pushIsCurrent } from '../background/resolve.ts'
+import { matchesEvent, needsTypingGuard, parseShortcut, type ParsedShortcut } from '../shared/keys.ts'
 
 /** Sites mutate constantly; rescanning on every mutation is what makes an
  *  extension show up in a page's performance trace. */
@@ -27,79 +28,26 @@ const ANNOUNCE_MS = 1100
 /** How often the expensive shadow-root walk may run. */
 const DEEP_SCAN_INTERVAL_MS = 2000
 
-/**
- * Chrome's key names as they appear in a shortcut string, mapped to
- * KeyboardEvent.code.
- *
- * Two details worth keeping. Matching on `code` rather than `key` sidesteps
- * keyboard layouts and the way modifiers rewrite the character. And the names
- * are the browser's *display* spellings, which are not what the manifest asked
- * for: a manifest "Up" comes back from chrome.commands.getAll() as
- * "Up Arrow". Spaces are stripped before the lookup for that reason.
- */
-function codeFor(name: string): string {
-  const compact = name.replace(/\s+/g, '')
-  const named: Record<string, string> = {
-    Up: 'ArrowUp',
-    UpArrow: 'ArrowUp',
-    ArrowUp: 'ArrowUp',
-    Down: 'ArrowDown',
-    DownArrow: 'ArrowDown',
-    ArrowDown: 'ArrowDown',
-    Left: 'ArrowLeft',
-    LeftArrow: 'ArrowLeft',
-    ArrowLeft: 'ArrowLeft',
-    Right: 'ArrowRight',
-    RightArrow: 'ArrowRight',
-    ArrowRight: 'ArrowRight',
-    Space: 'Space',
-    Comma: 'Comma',
-    Period: 'Period',
-    Home: 'Home',
-    End: 'End',
-    PageUp: 'PageUp',
-    PageDown: 'PageDown',
-    Insert: 'Insert',
-    Delete: 'Delete',
-  }
-  if (named[compact]) return named[compact]
-  if (/^[A-Za-z]$/.test(compact)) return `Key${compact.toUpperCase()}`
-  if (/^[0-9]$/.test(compact)) return `Digit${compact}`
-  return compact
-}
-
-interface ParsedBinding {
+interface ParsedBinding extends ParsedShortcut {
   command: CommandName
-  code: string
-  ctrl: boolean
-  alt: boolean
-  shift: boolean
-  meta: boolean
+  /** The browser also delivers this key, through chrome.commands. */
+  browser: boolean
 }
 
-function parseBinding({ command, shortcut }: Binding): ParsedBinding | null {
-  const parts = shortcut.split('+').map((p) => p.trim())
-  const key = parts.pop()
-  if (!key) return null
-  const lower = parts.map((p) => p.toLowerCase())
-  return {
-    command,
-    code: codeFor(key),
-    ctrl: lower.includes('ctrl'),
-    alt: lower.includes('alt'),
-    shift: lower.includes('shift'),
-    meta: lower.includes('command') || lower.includes('meta'),
+function parseBinding({ command, shortcut, browser }: Binding): ParsedBinding | null {
+  const parsed = parseShortcut(shortcut)
+  return parsed ? { ...parsed, command, browser: browser === true } : null
+}
+
+/** Typing into a field must not be read as a bare-key shortcut. */
+function isEditable(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false
+  if (target.isContentEditable) return true
+  if (target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement) return true
+  if (target instanceof HTMLInputElement) {
+    return !['button', 'checkbox', 'radio', 'range', 'submit', 'reset', 'color', 'file'].includes(target.type)
   }
-}
-
-function matches(event: KeyboardEvent, binding: ParsedBinding): boolean {
-  return (
-    event.code === binding.code &&
-    event.altKey === binding.alt &&
-    event.shiftKey === binding.shift &&
-    event.metaKey === binding.meta &&
-    event.ctrlKey === binding.ctrl
-  )
+  return false
 }
 
 /**
@@ -407,16 +355,6 @@ function start(): void {
   }
 
   /**
-   * The fullscreen fallback.
-   *
-   * The browser restricts keyboard input while a page is fullscreen, so
-   * chrome.commands stops firing — and the toolbar is hidden, so the popup is
-   * unreachable too. The page still receives key events, so it forwards them.
-   *
-   * Scoped to fullscreen deliberately: outside it chrome.commands works, and
-   * handling the keys here as well would apply every press twice.
-   */
-  /**
    * Moves this page's audio at once, without waiting for the worker.
    *
    * The worker is stopped whenever it is idle, so the round trip behind a
@@ -452,15 +390,30 @@ function start(): void {
     if (announcingFrame()) announce(globalOn)
   }
 
+  /**
+   * The page's own key listener.
+   *
+   * It catches two kinds of key. Keys set in the popup: Chrome has no API to
+   * rebind chrome.commands, so a remapped key is heard here, by the page.
+   * And, in fullscreen, every key: the browser restricts keyboard input there,
+   * so chrome.commands stops firing — and the toolbar is hidden, so the popup
+   * is unreachable too.
+   *
+   * A key the browser has registered is left to chrome.commands outside
+   * fullscreen, or every press would be applied twice.
+   */
   window.addEventListener(
     'keydown',
     (event) => {
-      if (!document.fullscreenElement || event.repeat) return
+      if (event.repeat) return
+      const fullscreen = document.fullscreenElement !== null
       // Only the frame holding the fullscreen content forwards, or an iframe
       // player would have every press counted twice.
       if (document.fullscreenElement instanceof HTMLIFrameElement) return
-      const binding = parsed.find((b) => matches(event, b))
+      const binding = parsed.find((b) => matchesEvent(event, b))
       if (!binding) return
+      if (binding.browser && !fullscreen) return
+      if (needsTypingGuard(binding) && isEditable(event.composedPath()[0] ?? event.target)) return
       event.preventDefault()
       event.stopPropagation()
       stepLocally(binding.command)

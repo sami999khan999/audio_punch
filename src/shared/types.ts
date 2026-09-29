@@ -5,6 +5,7 @@
  * boost (a Web Audio gain node, not the page's own volume control, which cannot
  * exceed 100%).
  */
+import type { CommandName } from './messages.ts'
 
 export const MIN_VOLUME = 0
 export const MAX_VOLUME = 6
@@ -26,6 +27,11 @@ export const SCHEMA_VERSION = 1
 
 export interface Settings {
   schema: number
+  /**
+   * Shortcuts set from the popup, by command. Absent means the browser's own
+   * binding stands; an empty string means the user unassigned it.
+   */
+  bindings: Partial<Record<CommandName, string>>
   /** When on, every tab follows `global` and per-site values are left alone. */
   globalOn: boolean
   global: AudioState
@@ -49,4 +55,14 @@ export interface PopupState {
    * property instead, which stops at 100%.
    */
   boostCapped: boolean
+  /** Every command's effective shortcut, in display order. */
+  bindings: ShortcutRow[]
+}
+
+export interface ShortcutRow {
+  command: CommandName
+  /** Empty when nothing is assigned. */
+  shortcut: string
+  /** True when set from the popup rather than inherited from the browser. */
+  custom: boolean
 }

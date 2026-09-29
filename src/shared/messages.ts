@@ -6,7 +6,7 @@
  */
 import type { AudioState, PopupState } from './types.ts'
 
-/** The four things a shortcut can do. Shared by both dispatch paths. */
+/** The five things a shortcut can do. Shared by both dispatch paths. */
 export type CommandName =
   | 'volume-up'
   | 'volume-down'
@@ -19,6 +19,12 @@ export interface Binding {
   command: CommandName
   /** e.g. "Alt+Shift+Up" — whatever the user has it set to. */
   shortcut: string
+  /**
+   * True when the browser itself has this key registered, and so delivers it
+   * through chrome.commands. The page then only handles it in fullscreen,
+   * where chrome.commands stops firing; any other key is the page's to catch.
+   */
+  browser?: boolean
 }
 
 /** Which setting a change applies to. */
@@ -31,6 +37,10 @@ export type PopupRequest =
   | { type: 'popup:nudge-volume'; scope: Scope; steps: number }
   | { type: 'popup:set-muted'; scope: Scope; muted: boolean }
   | { type: 'popup:reset'; scope: Scope }
+  /** `shortcut` null returns the command to the browser's own binding;
+   *  an empty string leaves it with no key at all. */
+  | { type: 'popup:set-binding'; command: CommandName; shortcut: string | null }
+  | { type: 'popup:reset-bindings' }
 
 export type PopupResponse = { ok: true; state: PopupState } | { ok: false; error: string }
 

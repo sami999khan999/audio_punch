@@ -395,6 +395,41 @@ try {
     `${applied?.audio?.volume} muted=${applied?.audio?.muted}`,
   )
 
+  // ── remapping from the popup ──────────────────────────────────────────
+  // Chrome cannot rebind chrome.commands, so a key set in the popup is heard
+  // by the page. Driven through the popup's own recorder, then pressed on the
+  // page outside fullscreen, where only the remap can be what answers it.
+  await popup.locator('.key', { hasText: 'Volume up' }).click()
+  check(
+    'the popup waits for the new keys',
+    (await popup.locator('.key', { hasText: 'Volume up' }).locator('kbd').textContent()) === 'Press keys…',
+  )
+  await popup.keyboard.press('Alt+Shift+KeyK')
+  await popup.waitForTimeout(300)
+  const shown = await popup.locator('.key', { hasText: 'Volume up' }).locator('kbd').textContent()
+  check('the popup shows the new key', shown === 'Alt+Shift+K', String(shown))
+
+  await page.bringToFront()
+  await page.waitForTimeout(200)
+  await page.keyboard.press('Alt+Shift+KeyK')
+  await page.waitForTimeout(400)
+  applied = await pageState()
+  check('a remapped key works on the page', applied?.audio?.volume === 1.1, `${applied?.audio?.volume}`)
+
+  // Taking a key another command already has moves it rather than doubling it.
+  await popup.locator('.key', { hasText: 'Mute / unmute' }).click()
+  await popup.keyboard.press('Alt+Shift+KeyK')
+  await popup.waitForTimeout(300)
+  const upAfter = await popup.locator('.key', { hasText: 'Volume up' }).locator('kbd').textContent()
+  check('a key taken by another command leaves the first', upAfter === 'Set a key', String(upAfter))
+
+  await popup.locator('.restore').click()
+  await popup.waitForTimeout(300)
+  const restored = await popup.locator('.key', { hasText: 'Volume up' }).locator('kbd').textContent()
+  check('restoring defaults brings the browser key back', restored === 'Alt+Shift+↑', String(restored))
+  check('the popup still throws nothing', popupErrors.length === 0, popupErrors.join('; '))
+  await page.bringToFront()
+
   // ── manifest shape ────────────────────────────────────────────────────
   const manifest = await popup.evaluate(() => chrome.runtime.getManifest())
   check('the popup is the action', manifest.action?.default_popup === 'popup.html')

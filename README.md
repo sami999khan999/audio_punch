@@ -1,7 +1,7 @@
 # Audio Punch
 
-Volume control for any tab, including boost past 100%. A popup, four keyboard
-shortcuts, and nothing else.
+Volume control for any tab, including boost past 100%. A popup, five
+remappable keyboard shortcuts, and nothing else.
 
 Chrome and Edge (Manifest V3). `manifest.config.ts` also emits a Firefox
 manifest.
@@ -56,17 +56,27 @@ Click the toolbar icon, or use the shortcuts:
 | `Alt+Shift+G` | Switch between *This site* and *All sites* |
 | *unassigned* | Reset to 100% |
 
-**Reset needs a key of your choosing.** The browser allows an extension to
-suggest a key for only four commands — and declaring a fifth is not a soft
-failure, it makes Chrome reject the manifest and the extension does not load at
-all. So `reset` ships as a real command with no key attached.
+**Every key can be changed from the popup.** Click a shortcut in the list and
+press the new combination; Escape cancels, `×` removes the key, and *Restore
+default keys* puts the browser's bindings back. Giving a key to one command
+takes it off any other that had it. `reset` ships with no key — the browser
+allows an extension to suggest a key for only four commands, and declaring a
+fifth makes Chrome reject the manifest — so set one here.
 
-Assign one at `chrome://extensions/shortcuts`, or click the row in the popup,
-which opens that page. Once assigned it behaves exactly like the others,
-fullscreen included.
+Chrome has no API to rebind an extension's shortcuts, so a key set in the popup
+is stored by the extension and heard by the page itself. That has two
+consequences worth knowing:
 
-The popup lists your actual bindings rather than these defaults, so a rebound
-shortcut shows up there correctly.
+- **A remapped key only works while a web page has focus** — not in the address
+  bar, and not on `chrome://` pages, the Web Store or the PDF viewer, where no
+  content script runs. Keys assigned at `chrome://extensions/shortcuts` work
+  there too, and that page still works as before.
+- **The old browser key is still Chrome's** until it is cleared at
+  `chrome://extensions/shortcuts`. It no longer does what it used to: a key the
+  browser catches is looked up against the popup's bindings, so it runs
+  whichever command it now belongs to, or nothing.
+
+A key with no Ctrl, Alt or Cmd is ignored while typing in a text field.
 
 The shortcuts act on whichever scope the popup is set to: with *This site*
 selected they change the current site, with *All sites* they change the global
@@ -84,9 +94,9 @@ script therefore listens for the shortcuts itself, but **only while the document
 is fullscreen**: outside it `chrome.commands` works, and handling the keys in
 both places would apply every press twice.
 
-It reads the live bindings from `chrome.commands.getAll()` rather than the
-manifest defaults, so rebinding a shortcut is respected in fullscreen too — and
-so is assigning one to `reset`, which has no default. The
+It reads the live bindings — the popup's, then `chrome.commands.getAll()` —
+rather than the manifest defaults, so a rebound shortcut is respected in
+fullscreen too. The
 on-screen value is appended to the fullscreen element, because a fullscreen
 element is promoted to the browser's top layer where nothing outside it renders
 at all — no z-index reaches past it.

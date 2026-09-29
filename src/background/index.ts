@@ -30,7 +30,8 @@ import {
 } from '../shared/messages.ts'
 import { defaultAudio, readSettings } from '../shared/defaults.ts'
 import { originOf } from '../shared/origin.ts'
-import type { AudioState, PopupState, Settings } from '../shared/types.ts'
+import { COMMANDS, sameShortcut } from '../shared/keys.ts'
+import type { AudioState, PopupState, Settings, ShortcutRow } from '../shared/types.ts'
 import { nudge, readScope, resolveAudio, scopeFor, writeScope } from './resolve.ts'
 
 const STORAGE_KEY = 'audio-punch:settings'
@@ -219,6 +220,7 @@ async function popupState(): Promise<PopupState> {
     title: tab?.title ?? '',
     supported: origin !== '',
     boostCapped: tab?.id !== undefined && cappedTabs.has(tab.id),
+    bindings: await shortcutRows(),
   }
 }
 
@@ -298,14 +300,71 @@ async function runCommand(command: CommandName, echo?: Echo): Promise<void> {
   }
 }
 
-/** The shortcuts as the browser currently has them, defaults or rebound. */
-async function bindings(): Promise<Binding[]> {
+// ---------------------------------------------------------------- shortcuts
+
+/**
+ * The browser's own bindings, by command.
+ *
+ * Chrome has no API to change these, and no event when the user changes them
+ * at chrome://extensions/shortcuts, so they are read fresh each time.
+ */
+async function browserShortcuts(): Promise<Map<CommandName, string>> {
   const commands = await chrome.commands.getAll()
-  return commands
-    .filter((c): c is chrome.commands.Command & { name: string; shortcut: string } =>
-      Boolean(c.name && c.shortcut),
-    )
-    .map((c) => ({ command: c.name as CommandName, shortcut: c.shortcut }))
+  return new Map(commands.map((c) => [c.name as CommandName, c.shortcut ?? '']))
+}
+
+/**
+ * Every command's effective key: the one set in the popup if there is one,
+ * otherwise whatever the browser has.
+ */
+async function shortcutRows(): Promise<ShortcutRow[]> {
+  const [current, browser] = await Promise.all([load(), browserShortcuts()])
+  return COMMANDS.map((command) => {
+    const custom = current.bindings[command]
+    return custom === undefined
+      ? { command, shortcut: browser.get(command) ?? '', custom: false }
+      : { command, shortcut: custom, custom: true }
+  })
+}
+
+/** What the page listens for. See Binding.browser for the split. */
+async function bindings(): Promise<Binding[]> {
+  const [rows, browser] = await Promise.all([shortcutRows(), browserShortcuts()])
+  const registered = [...browser.values()].filter(Boolean)
+  return rows
+    .filter((row) => row.shortcut)
+    .map((row) => ({
+      command: row.command,
+      shortcut: row.shortcut,
+      browser: registered.some((key) => sameShortcut(key, row.shortcut)),
+    }))
+}
+
+/** A remap has to reach every open page, or the old key keeps working there. */
+async function broadcastBindings(): Promise<void> {
+  const [tabs, list] = await Promise.all([chrome.tabs.query({}), bindings()])
+  for (const tab of tabs) {
+    if (tab.id !== undefined && originOf(tab.url)) {
+      void send(tab.id, { type: 'content:bindings', bindings: list })
+    }
+  }
+}
+
+/**
+ * Gives `shortcut` to `command`, taking it off any other command first — one
+ * key doing two things is never what was meant.
+ */
+function assignShortcut(current: Settings, command: CommandName, shortcut: string | null, rows: ShortcutRow[]): void {
+  if (shortcut) {
+    for (const row of rows) {
+      if (row.command !== command && row.shortcut && sameShortcut(row.shortcut, shortcut)) {
+        current.bindings[row.command] = ''
+      }
+    }
+  }
+  if (shortcut === null) delete current.bindings[command]
+  else current.bindings[command] = shortcut
+  persist()
 }
 
 async function handle(request: PopupRequest): Promise<PopupResponse> {
@@ -348,6 +407,17 @@ async function handle(request: PopupRequest): Promise<PopupResponse> {
     case 'popup:reset':
       if (request.scope === 'site' && !origin) break
       commit(current, request.scope, origin, defaultAudio(), tab)
+      break
+
+    case 'popup:set-binding':
+      assignShortcut(current, request.command, request.shortcut, await shortcutRows())
+      void broadcastBindings()
+      break
+
+    case 'popup:reset-bindings':
+      current.bindings = {}
+      persist()
+      void broadcastBindings()
       break
   }
 
@@ -397,11 +467,19 @@ chrome.runtime.onMessage.addListener((message: ToBackground, sender, sendRespons
 })
 
 /**
- * The browser allows an extension four shortcuts carrying a suggested key.
- * These are exactly the four this extension has.
+ * A key the browser caught. It reports the command the key is registered to,
+ * but the popup may since have given that key to another command, or taken it
+ * away altogether — so the key is looked up afresh and whatever it now means
+ * is what runs.
  */
 chrome.commands.onCommand.addListener((command) => {
-  void runCommand(command as CommandName)
+  void (async () => {
+    const [browser, rows] = await Promise.all([browserShortcuts(), shortcutRows()])
+    const pressed = browser.get(command as CommandName)
+    if (!pressed) return
+    const target = rows.find((row) => row.shortcut && sameShortcut(row.shortcut, pressed))
+    if (target) await runCommand(target.command)
+  })()
 })
 
 // The active tab is cached for a moment; anything that could move it drops it.
