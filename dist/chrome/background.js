@@ -1,4 +1,4 @@
-import { d as defaultAudio, c as clampVolume, V as VOLUME_STEP, b as sameShortcut, r as readSettings, o as originOf, C as COMMANDS } from "./chunks/origin-CwnPWmt4.js";
+import { d as defaultAudio, c as clampVolume, V as VOLUME_STEP, b as sameShortcut, r as readSettings, o as originOf, C as COMMANDS, D as DEFAULT_BINDINGS } from "./chunks/origin-BkuG-N3I.js";
 function resolveAudio(settings2, origin) {
   if (settings2.globalOn) return { ...settings2.global };
   const site = settings2.sites[origin];
@@ -141,7 +141,7 @@ async function popupState() {
     title: tab?.title ?? "",
     supported: origin !== "",
     boostCapped: tab?.id !== void 0 && cappedTabs.has(tab.id),
-    bindings: await shortcutRows()
+    bindings: shortcutRows(current)
   };
 }
 function commit(current, scope, origin, patch, front, announce = false, echo) {
@@ -187,15 +187,15 @@ async function browserShortcuts() {
   const commands = await chrome.commands.getAll();
   return new Map(commands.map((c) => [c.name, c.shortcut ?? ""]));
 }
-async function shortcutRows() {
-  const [current, browser] = await Promise.all([load(), browserShortcuts()]);
+function shortcutRows(current) {
   return COMMANDS.map((command) => {
     const custom = current.bindings[command];
-    return custom === void 0 ? { command, shortcut: browser.get(command) ?? "", custom: false } : { command, shortcut: custom, custom: true };
+    return custom === void 0 ? { command, shortcut: DEFAULT_BINDINGS[command], custom: false } : { command, shortcut: custom, custom: true };
   });
 }
 async function bindings() {
-  const [rows, browser] = await Promise.all([shortcutRows(), browserShortcuts()]);
+  const [current, browser] = await Promise.all([load(), browserShortcuts()]);
+  const rows = shortcutRows(current);
   const registered = [...browser.values()].filter(Boolean);
   return rows.filter((row) => row.shortcut).map((row) => ({
     command: row.command,
@@ -259,7 +259,7 @@ async function handle(request) {
       commit(current, request.scope, origin, defaultAudio(), tab);
       break;
     case "popup:set-binding":
-      assignShortcut(current, request.command, request.shortcut, await shortcutRows());
+      assignShortcut(current, request.command, request.shortcut, shortcutRows(current));
       void broadcastBindings();
       break;
     case "popup:reset-bindings":
@@ -301,10 +301,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 chrome.commands.onCommand.addListener((command) => {
   void (async () => {
-    const [browser, rows] = await Promise.all([browserShortcuts(), shortcutRows()]);
+    const [browser, current] = await Promise.all([browserShortcuts(), load()]);
     const pressed = browser.get(command);
     if (!pressed) return;
-    const target = rows.find((row) => row.shortcut && sameShortcut(row.shortcut, pressed));
+    const target = shortcutRows(current).find((row) => row.shortcut && sameShortcut(row.shortcut, pressed));
     if (target) await runCommand(target.command);
   })();
 });

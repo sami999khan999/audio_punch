@@ -5,7 +5,15 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { parseShortcut, prettyShortcut, sameShortcut, shortcutFromEvent } from '../src/shared/keys.ts'
+import {
+  COMMANDS,
+  DEFAULT_BINDINGS,
+  needsTypingGuard,
+  parseShortcut,
+  prettyShortcut,
+  sameShortcut,
+  shortcutFromEvent,
+} from '../src/shared/keys.ts'
 import { readSettings } from '../src/shared/defaults.ts'
 
 function keydown(init: Partial<KeyboardEvent>): KeyboardEvent {
@@ -52,4 +60,21 @@ test('stored bindings are kept, including an unassigned one', () => {
 test('stored bindings for unknown commands or of the wrong type are dropped', () => {
   const settings = readSettings({ bindings: { 'self-destruct': 'Alt+KeyX', 'volume-down': 7 } })
   assert.deepEqual(settings.bindings, {})
+})
+
+test('every command has a default key, and no two share one', () => {
+  for (const command of COMMANDS) {
+    const parsed = parseShortcut(DEFAULT_BINDINGS[command])
+    assert.ok(parsed, command)
+    assert.ok(!needsTypingGuard(parsed), `${command} would fire while typing`)
+  }
+  const keys = COMMANDS.map((c) => DEFAULT_BINDINGS[c])
+  for (const [i, key] of keys.entries()) {
+    assert.ok(!keys.slice(i + 1).some((other) => sameShortcut(key, other)), key)
+  }
+})
+
+test('the volume defaults are Alt+Shift and the arrows', () => {
+  assert.ok(sameShortcut(DEFAULT_BINDINGS['volume-up'], 'Alt+Shift+Up'))
+  assert.ok(sameShortcut(DEFAULT_BINDINGS['volume-down'], 'Alt+Shift+Down'))
 })

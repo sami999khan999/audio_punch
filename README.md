@@ -54,14 +54,18 @@ Click the toolbar icon, or use the shortcuts:
 | `Alt+Shift+↓` | Volume down |
 | `Alt+Shift+M` | Mute / unmute |
 | `Alt+Shift+G` | Switch between *This site* and *All sites* |
-| *unassigned* | Reset to 100% |
+| `Alt+Shift+R` | Reset to 100% |
 
-**Every key can be changed from the popup.** Click a shortcut in the list and
-press the new combination; Escape cancels, `×` removes the key, and *Restore
-default keys* puts the browser's bindings back. Giving a key to one command
-takes it off any other that had it. `reset` ships with no key — the browser
-allows an extension to suggest a key for only four commands, and declaring a
-fifth makes Chrome reject the manifest — so set one here.
+These defaults belong to the extension, not to Chrome. Chrome applies a
+manifest's suggested keys only on a fresh install, for at most four commands,
+and drops any that clash with another extension — so leaning on it left
+commands with no key. The defaults live in `src/shared/keys.ts`
+(`DEFAULT_BINDINGS`).
+
+**Every key is set from the popup.** Click a shortcut in the list and press the
+new combination; Escape cancels, `×` removes the key, and *Restore default keys*
+puts the defaults above back. Giving a key to one command takes it off any
+other that had it. Holding volume up or down ramps the volume.
 
 Chrome has no API to rebind an extension's shortcuts, so a key set in the popup
 is stored by the extension and heard by the page itself. That has two

@@ -9,6 +9,13 @@ const COMMANDS = [
   "reset",
   "toggle-global"
 ];
+const DEFAULT_BINDINGS = {
+  "volume-up": "Alt+Shift+ArrowUp",
+  "volume-down": "Alt+Shift+ArrowDown",
+  "toggle-mute": "Alt+Shift+KeyM",
+  reset: "Alt+Shift+KeyR",
+  "toggle-global": "Alt+Shift+KeyG"
+};
 function codeFor(name) {
   const compact = name.replace(/\s+/g, "");
   const named = {
@@ -178,6 +185,7 @@ function prettyOrigin(origin) {
 }
 export {
   COMMANDS as C,
+  DEFAULT_BINDINGS as D,
   MAX_VOLUME as M,
   VOLUME_STEP as V,
   prettyShortcut as a,

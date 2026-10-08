@@ -1,4 +1,4 @@
-import { M as MAX_VOLUME, p as prettyOrigin, f as formatVolume, a as prettyShortcut, s as shortcutFromEvent } from "./chunks/origin-CwnPWmt4.js";
+import { M as MAX_VOLUME, p as prettyOrigin, f as formatVolume, a as prettyShortcut, s as shortcutFromEvent } from "./chunks/origin-BkuG-N3I.js";
 const STYLES = `
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
@@ -168,13 +168,27 @@ function mount() {
     return Math.round(position * MAX_VOLUME * 100) / 100;
   }
   let dragging = false;
+  let pendingVolume = null;
+  let frame = 0;
+  function dragTo(clientX) {
+    pendingVolume = volumeAt(clientX);
+    showVolume(pendingVolume);
+    if (frame) return;
+    frame = requestAnimationFrame(() => {
+      frame = 0;
+      if (pendingVolume === null) return;
+      const volume = pendingVolume;
+      pendingVolume = null;
+      void setVolume(volume);
+    });
+  }
   track.addEventListener("pointerdown", (event) => {
     dragging = true;
     track.setPointerCapture(event.pointerId);
-    void setVolume(volumeAt(event.clientX));
+    dragTo(event.clientX);
   });
   track.addEventListener("pointermove", (event) => {
-    if (dragging) void setVolume(volumeAt(event.clientX));
+    if (dragging) dragTo(event.clientX);
   });
   const endDrag = () => {
     dragging = false;
@@ -205,8 +219,12 @@ function mount() {
     "toggle-global": "This site / all sites"
   };
   let recording = null;
+  let keysDrawn = "";
   function renderKeys() {
     if (!state) return;
+    const drawn = JSON.stringify([recording, state.bindings]);
+    if (drawn === keysDrawn) return;
+    keysDrawn = drawn;
     const rows = state.bindings.map((row) => {
       const listening = recording === row.command;
       const kbd = el("kbd", row.shortcut || listening ? {} : { "data-unset": "true" }, [
@@ -297,6 +315,17 @@ function mount() {
   async function setVolume(volume) {
     await request({ type: "popup:set-volume", scope: scope(), volume });
   }
+  function showVolume(volume, muted = current().muted) {
+    value.textContent = formatVolume(volume);
+    value.setAttribute("data-muted", String(muted));
+    value.setAttribute("data-boost", String(!muted && volume > 1));
+    const position = volume / MAX_VOLUME;
+    fill.style.width = `${position * 100}%`;
+    fill.setAttribute("data-boost", String(volume > 1));
+    knob.style.left = `${position * 100}%`;
+    track.setAttribute("aria-valuenow", String(Math.round(volume * 100)));
+    track.setAttribute("aria-valuetext", formatVolume(volume));
+  }
   function render(next) {
     state = next;
     if (dragging) return;
@@ -306,15 +335,7 @@ function mount() {
     siteBtn.setAttribute("data-on", String(!global));
     allBtn.setAttribute("data-on", String(global));
     siteLabel.textContent = global ? "Applies to every tab" : next.supported ? prettyOrigin(next.origin) : "Not available on this page";
-    value.textContent = formatVolume(audio.volume);
-    value.setAttribute("data-muted", String(audio.muted));
-    value.setAttribute("data-boost", String(!audio.muted && audio.volume > 1));
-    const position = audio.volume / MAX_VOLUME;
-    fill.style.width = `${position * 100}%`;
-    fill.setAttribute("data-boost", String(audio.volume > 1));
-    knob.style.left = `${position * 100}%`;
-    track.setAttribute("aria-valuenow", String(Math.round(audio.volume * 100)));
-    track.setAttribute("aria-valuetext", formatVolume(audio.volume));
+    showVolume(audio.volume, audio.muted);
     muteBtn.textContent = audio.muted ? "Unmute" : "Mute";
     muteBtn.setAttribute("data-on", String(audio.muted));
     for (const control of [minus, plus, muteBtn, resetBtn]) control.disabled = blocked;

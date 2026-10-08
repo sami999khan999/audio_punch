@@ -405,7 +405,6 @@ function start(): void {
   window.addEventListener(
     'keydown',
     (event) => {
-      if (event.repeat) return
       const fullscreen = document.fullscreenElement !== null
       // Only the frame holding the fullscreen content forwards, or an iframe
       // player would have every press counted twice.
@@ -413,6 +412,12 @@ function start(): void {
       const binding = parsed.find((b) => matchesEvent(event, b))
       if (!binding) return
       if (binding.browser && !fullscreen) return
+      // Holding a volume key ramps it, one step per auto-repeat. A held toggle
+      // would flicker, so those act once per press.
+      if (event.repeat && binding.command !== 'volume-up' && binding.command !== 'volume-down') {
+        event.preventDefault()
+        return
+      }
       if (needsTypingGuard(binding) && isEditable(event.composedPath()[0] ?? event.target)) return
       event.preventDefault()
       event.stopPropagation()

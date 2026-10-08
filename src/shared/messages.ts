@@ -37,7 +37,7 @@ export type PopupRequest =
   | { type: 'popup:nudge-volume'; scope: Scope; steps: number }
   | { type: 'popup:set-muted'; scope: Scope; muted: boolean }
   | { type: 'popup:reset'; scope: Scope }
-  /** `shortcut` null returns the command to the browser's own binding;
+  /** `shortcut` null returns the command to its default key;
    *  an empty string leaves it with no key at all. */
   | { type: 'popup:set-binding'; command: CommandName; shortcut: string | null }
   | { type: 'popup:reset-bindings' }

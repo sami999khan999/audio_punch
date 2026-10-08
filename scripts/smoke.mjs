@@ -217,7 +217,7 @@ try {
   check('the page goes fullscreen', await page.evaluate(() => !!document.fullscreenElement))
 
   const bindingCount = (await pageState())?.bindings
-  check('the page received the live shortcut bindings', bindingCount === 4, `${bindingCount}`)
+  check('the page received the live shortcut bindings', bindingCount === 5, `${bindingCount}`)
 
   await page.keyboard.press('Alt+Shift+ArrowUp')
   await page.waitForTimeout(350)

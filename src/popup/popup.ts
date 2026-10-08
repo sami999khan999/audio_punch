@@ -205,13 +205,30 @@ function mount(): void {
   }
 
   let dragging = false
+  /** The latest pointer position, sent at most once a frame. A pointer fires
+   *  far more often than the screen redraws, and each extra message is one
+   *  more round trip for the worker and one more gain change for the page. */
+  let pendingVolume: number | null = null
+  let frame = 0
+  function dragTo(clientX: number): void {
+    pendingVolume = volumeAt(clientX)
+    showVolume(pendingVolume)
+    if (frame) return
+    frame = requestAnimationFrame(() => {
+      frame = 0
+      if (pendingVolume === null) return
+      const volume = pendingVolume
+      pendingVolume = null
+      void setVolume(volume)
+    })
+  }
   track.addEventListener('pointerdown', (event) => {
     dragging = true
     track.setPointerCapture(event.pointerId)
-    void setVolume(volumeAt(event.clientX))
+    dragTo(event.clientX)
   })
   track.addEventListener('pointermove', (event) => {
-    if (dragging) void setVolume(volumeAt(event.clientX))
+    if (dragging) dragTo(event.clientX)
   })
   const endDrag = () => {
     dragging = false
@@ -249,6 +266,8 @@ function mount(): void {
 
   /** The command waiting for its new key, if any. */
   let recording: CommandName | null = null
+  /** What the list was last built from, so a volume change does not rebuild it. */
+  let keysDrawn = ''
 
   /**
    * Every key is set here. Click a key, press the new combination; Escape
@@ -257,6 +276,9 @@ function mount(): void {
    */
   function renderKeys(): void {
     if (!state) return
+    const drawn = JSON.stringify([recording, state.bindings])
+    if (drawn === keysDrawn) return
+    keysDrawn = drawn
     const rows = state.bindings.map((row) => {
       const listening = recording === row.command
       const kbd = el('kbd', row.shortcut || listening ? {} : { 'data-unset': 'true' }, [
@@ -360,6 +382,20 @@ function mount(): void {
     await request({ type: 'popup:set-volume', scope: scope(), volume })
   }
 
+  /** Draws a volume straight away — mid-drag, ahead of the worker's answer. */
+  function showVolume(volume: number, muted = current().muted): void {
+    value.textContent = formatVolume(volume)
+    value.setAttribute('data-muted', String(muted))
+    value.setAttribute('data-boost', String(!muted && volume > 1))
+
+    const position = volume / MAX_VOLUME
+    fill.style.width = `${position * 100}%`
+    fill.setAttribute('data-boost', String(volume > 1))
+    knob.style.left = `${position * 100}%`
+    track.setAttribute('aria-valuenow', String(Math.round(volume * 100)))
+    track.setAttribute('aria-valuetext', formatVolume(volume))
+  }
+
   function render(next: PopupState): void {
     state = next
     // Mid-drag the pointer is authoritative; a broadcast would snap the knob
@@ -379,16 +415,7 @@ function mount(): void {
         ? prettyOrigin(next.origin)
         : 'Not available on this page'
 
-    value.textContent = formatVolume(audio.volume)
-    value.setAttribute('data-muted', String(audio.muted))
-    value.setAttribute('data-boost', String(!audio.muted && audio.volume > 1))
-
-    const position = audio.volume / MAX_VOLUME
-    fill.style.width = `${position * 100}%`
-    fill.setAttribute('data-boost', String(audio.volume > 1))
-    knob.style.left = `${position * 100}%`
-    track.setAttribute('aria-valuenow', String(Math.round(audio.volume * 100)))
-    track.setAttribute('aria-valuetext', formatVolume(audio.volume))
+    showVolume(audio.volume, audio.muted)
 
     muteBtn.textContent = audio.muted ? 'Unmute' : 'Mute'
     muteBtn.setAttribute('data-on', String(audio.muted))

@@ -30,7 +30,7 @@ import {
 } from '../shared/messages.ts'
 import { defaultAudio, readSettings } from '../shared/defaults.ts'
 import { originOf } from '../shared/origin.ts'
-import { COMMANDS, sameShortcut } from '../shared/keys.ts'
+import { COMMANDS, DEFAULT_BINDINGS, sameShortcut } from '../shared/keys.ts'
 import type { AudioState, PopupState, Settings, ShortcutRow } from '../shared/types.ts'
 import { nudge, readScope, resolveAudio, scopeFor, writeScope } from './resolve.ts'
 
@@ -220,7 +220,7 @@ async function popupState(): Promise<PopupState> {
     title: tab?.title ?? '',
     supported: origin !== '',
     boostCapped: tab?.id !== undefined && cappedTabs.has(tab.id),
-    bindings: await shortcutRows(),
+    bindings: shortcutRows(current),
   }
 }
 
@@ -315,21 +315,23 @@ async function browserShortcuts(): Promise<Map<CommandName, string>> {
 
 /**
  * Every command's effective key: the one set in the popup if there is one,
- * otherwise whatever the browser has.
+ * otherwise the extension's default. The browser's own bindings do not decide
+ * this — Chrome often leaves them unassigned — they only tell the page which
+ * keys chrome.commands will deliver instead (see `bindings`).
  */
-async function shortcutRows(): Promise<ShortcutRow[]> {
-  const [current, browser] = await Promise.all([load(), browserShortcuts()])
+function shortcutRows(current: Settings): ShortcutRow[] {
   return COMMANDS.map((command) => {
     const custom = current.bindings[command]
     return custom === undefined
-      ? { command, shortcut: browser.get(command) ?? '', custom: false }
+      ? { command, shortcut: DEFAULT_BINDINGS[command], custom: false }
       : { command, shortcut: custom, custom: true }
   })
 }
 
 /** What the page listens for. See Binding.browser for the split. */
 async function bindings(): Promise<Binding[]> {
-  const [rows, browser] = await Promise.all([shortcutRows(), browserShortcuts()])
+  const [current, browser] = await Promise.all([load(), browserShortcuts()])
+  const rows = shortcutRows(current)
   const registered = [...browser.values()].filter(Boolean)
   return rows
     .filter((row) => row.shortcut)
@@ -410,7 +412,7 @@ async function handle(request: PopupRequest): Promise<PopupResponse> {
       break
 
     case 'popup:set-binding':
-      assignShortcut(current, request.command, request.shortcut, await shortcutRows())
+      assignShortcut(current, request.command, request.shortcut, shortcutRows(current))
       void broadcastBindings()
       break
 
@@ -474,10 +476,10 @@ chrome.runtime.onMessage.addListener((message: ToBackground, sender, sendRespons
  */
 chrome.commands.onCommand.addListener((command) => {
   void (async () => {
-    const [browser, rows] = await Promise.all([browserShortcuts(), shortcutRows()])
+    const [browser, current] = await Promise.all([browserShortcuts(), load()])
     const pressed = browser.get(command as CommandName)
     if (!pressed) return
-    const target = rows.find((row) => row.shortcut && sameShortcut(row.shortcut, pressed))
+    const target = shortcutRows(current).find((row) => row.shortcut && sameShortcut(row.shortcut, pressed))
     if (target) await runCommand(target.command)
   })()
 })

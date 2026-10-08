@@ -28,8 +28,8 @@ export const SCHEMA_VERSION = 1
 export interface Settings {
   schema: number
   /**
-   * Shortcuts set from the popup, by command. Absent means the browser's own
-   * binding stands; an empty string means the user unassigned it.
+   * Shortcuts set from the popup, by command. Absent means the default in
+   * DEFAULT_BINDINGS stands; an empty string means the user unassigned it.
    */
   bindings: Partial<Record<CommandName, string>>
   /** When on, every tab follows `global` and per-site values are left alone. */
@@ -63,6 +63,6 @@ export interface ShortcutRow {
   command: CommandName
   /** Empty when nothing is assigned. */
   shortcut: string
-  /** True when set from the popup rather than inherited from the browser. */
+  /** True when set from the popup rather than the default. */
   custom: boolean
 }

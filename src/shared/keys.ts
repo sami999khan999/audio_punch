@@ -17,6 +17,23 @@ export const COMMANDS: CommandName[] = [
 ]
 
 /**
+ * The keys every command starts with.
+ *
+ * Owned by the extension rather than left to the manifest: Chrome applies a
+ * manifest's suggested keys only on a fresh install, only for four commands,
+ * and silently drops any that clash with another extension — so relying on it
+ * leaves commands with no key at all. These are what the popup shows and the
+ * page listens for until the user sets something else.
+ */
+export const DEFAULT_BINDINGS: Record<CommandName, string> = {
+  'volume-up': 'Alt+Shift+ArrowUp',
+  'volume-down': 'Alt+Shift+ArrowDown',
+  'toggle-mute': 'Alt+Shift+KeyM',
+  reset: 'Alt+Shift+KeyR',
+  'toggle-global': 'Alt+Shift+KeyG',
+}
+
+/**
  * Chrome's key names mapped to KeyboardEvent.code.
  *
  * Matching on `code` rather than `key` sidesteps keyboard layouts and the way
