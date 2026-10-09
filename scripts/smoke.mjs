@@ -4,7 +4,7 @@
  * page's audio, the popup renders and drives it, and per-site versus global
  * behave the way the unit tests say they should.
  *
- * Needs Playwright (`npm i -D playwright`) and a built `dist/chrome`.
+ * Needs Playwright (`npm i -D playwright`) and a built `chrome-extension-build`.
  */
 import { chromium } from 'playwright'
 import { createServer } from 'node:http'
@@ -13,7 +13,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const dist = fileURLToPath(new URL('../dist/chrome', import.meta.url))
+const dist = fileURLToPath(new URL('../chrome-extension-build', import.meta.url))
 const checks = []
 const check = (name, pass, detail = '') => {
   checks.push({ name, pass })

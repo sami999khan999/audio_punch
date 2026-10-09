@@ -30,16 +30,16 @@ git clone https://github.com/sami999khan999/audio_punch.git
 ```
 
 **chrome://extensions** → enable **Developer mode** → **Load unpacked** →
-choose `audio_punch/dist/chrome`.
+choose `audio_punch/chrome-extension-build`.
 
 To build it yourself after a change:
 
 ```bash
 npm install
-npm run build          # → dist/chrome
+npm run build          # → chrome-extension-build/
 ```
 
-`dist/` is tracked on purpose. Rebuild and commit it alongside any source
+`chrome-extension-build/` is tracked on purpose. Rebuild and commit it alongside any source
 change, or the loaded extension and the source drift apart.
 
 ---
@@ -215,7 +215,7 @@ Two details worth knowing before editing:
 ```bash
 npm run check          # tsc --noEmit
 npm test               # unit tests (node:test)
-npm run build          # → dist/chrome
+npm run build          # → chrome-extension-build/
 npm run verify         # all three
 
 npm run test:smoke     # loads the built extension in real Chromium

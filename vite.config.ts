@@ -7,7 +7,7 @@ import { makeManifest, type Target } from './manifest.config.ts'
 
 const root = dirname(fileURLToPath(import.meta.url))
 const target = (process.env.TARGET as Target) ?? 'chrome'
-const outDir = resolve(root, 'dist', target)
+const outDir = resolve(root, `${target}-extension-build`)
 
 /**
  * A manifest-declared content script runs as a classic script, not a module,
