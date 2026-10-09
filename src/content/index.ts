@@ -160,7 +160,16 @@ function start(): void {
     source.connect(node)
     // The gain node owns the level now; the element's own must be out of the way.
     element.volume = 1
-    element.muted = false
+    ourVolume.delete(element)
+    // `muted` is the page's, not ours, and is left alone. A site's own mute
+    // button sets it, and muted autoplay (YouTube's hover previews) depends on
+    // it: unmuting a playing element before the user has interacted with the
+    // page makes Chrome pause it instead. Only a mute we set ourselves, from
+    // before the element was routed, is undone — and only once it is safe.
+    if (ourMute.has(element)) {
+      ourMute.delete(element)
+      if (element.paused || navigator.userActivation?.hasBeenActive) element.muted = false
+    }
 
     // The context starts suspended until a gesture; playing counts as one.
     element.addEventListener('play', resume, { passive: true })
