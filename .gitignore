@@ -1,6 +1,7 @@
 node_modules/
+dist/
 
-# chrome-extension-build/ is deliberately committed: the built extension is the thing you load,
+# release/ (the Chrome build) is deliberately committed: the built extension is the thing you load,
 # and keeping it in the repo means it can be used without a toolchain. Rebuild
 # with `npm run build` and commit the result alongside any source change.
 
